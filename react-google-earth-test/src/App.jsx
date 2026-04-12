@@ -472,7 +472,7 @@ export default function App() {
         <p className="eyebrow">Geo Intelligence Platform</p>
         <h1>地图智能分析平台</h1>
         <p className="intro">
-          当前默认实现的是卫星嵌入教程场景。后续的分割与检索/对比场景已经保留了统一协议和前端入口。
+          这是一个基于地理位置嵌入的地图智能分析平台。
         </p>
 
         <label className="field">
