@@ -1,0 +1,318 @@
+:root {
+  color: #1f2937;
+  background: #f3f6fb;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background:
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 28%),
+    linear-gradient(180deg, #ffffff 0%, #f3f6fb 100%);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.appShell {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr) 320px;
+  min-height: 100vh;
+}
+
+.leftPanel,
+.rightPanel {
+  padding: 24px 20px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.leftPanel {
+  border-right: 1px solid #e5e7eb;
+}
+
+.rightPanel {
+  border-left: 1px solid #e5e7eb;
+  overflow-y: auto;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: #2563eb;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 12px;
+}
+
+h1,
+h2 {
+  margin: 0;
+  color: #111827;
+}
+
+h1 {
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+h2 {
+  font-size: 18px;
+  margin-bottom: 14px;
+}
+
+.intro,
+.statusLine,
+.placeholder,
+.scenarioBox p,
+.layerMeta {
+  color: #4b5563;
+  line-height: 1.6;
+}
+
+.metaBlock,
+.fieldGrid,
+.summaryList {
+  display: grid;
+  gap: 12px;
+}
+
+.metaBlock {
+  grid-template-columns: 1fr 1fr;
+  margin: 20px 0;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #f8fafc;
+}
+
+.metaLabel {
+  display: block;
+  margin-bottom: 4px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field span,
+.sliderRow span,
+.summaryRow span {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.field input,
+.select,
+.artifactBox {
+  width: 100%;
+  padding: 11px 12px;
+  border-radius: 12px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  color: #111827;
+}
+
+.scenarioBox,
+.sideSection,
+.layerCard {
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.scenarioBox {
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.controlRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.primaryBtn,
+.ghostBtn,
+.successBtn,
+.runBtn {
+  border-radius: 999px;
+  padding: 10px 16px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.primaryBtn,
+.runBtn {
+  color: #ffffff;
+  background: linear-gradient(135deg, #2563eb, #0f766e);
+}
+
+.ghostBtn {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.successBtn {
+  color: #ffffff;
+  background: linear-gradient(135deg, #16a34a, #15803d);
+}
+
+.runBtn {
+  width: 100%;
+  margin-top: 18px;
+}
+
+.runBtn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.checkboxRow,
+.layerHeader,
+.sliderRow,
+.summaryRow {
+  display: flex;
+  align-items: center;
+}
+
+.checkboxRow,
+.sliderRow {
+  gap: 10px;
+}
+
+.checkboxRow {
+  margin-top: 6px;
+}
+
+.statusPill {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.statusPill.ready {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.statusPill.planned,
+.statusPill.not_implemented {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.errorText {
+  color: #b91c1c;
+  line-height: 1.5;
+}
+
+.mapPane {
+  padding: 18px;
+}
+
+.mapViewport {
+  width: 100%;
+  height: calc(100vh - 36px);
+  border-radius: 24px;
+  border: 1px solid #dbe2ea;
+  background: #eef2f7;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+}
+
+.sideSection {
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.layerCard {
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.layerHeader {
+  gap: 10px;
+  font-weight: 600;
+}
+
+.layerMeta {
+  margin: 8px 0 10px;
+  font-size: 13px;
+}
+
+.sliderRow input {
+  flex: 1;
+}
+
+.summaryList {
+  gap: 10px;
+}
+
+.summaryRow {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.summaryRow strong {
+  text-align: right;
+}
+
+.artifactBox {
+  white-space: pre-wrap;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1200px) {
+  .appShell {
+    grid-template-columns: 320px 1fr;
+  }
+
+  .rightPanel {
+    grid-column: 1 / -1;
+    border-left: 0;
+    border-top: 1px solid #e5e7eb;
+  }
+}
+
+@media (max-width: 900px) {
+  .appShell {
+    grid-template-columns: 1fr;
+  }
+
+  .leftPanel,
+  .rightPanel {
+    border: 0;
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  .mapPane {
+    padding-top: 0;
+  }
+
+  .mapViewport {
+    height: 65vh;
+    border-radius: 20px;
+  }
+}

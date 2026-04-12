@@ -1,0 +1,6 @@
+earthengine-api
+fastapi
+uvicorn
+pydantic
+numpy
+scikit-learn

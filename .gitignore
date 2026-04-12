@@ -1,0 +1,32 @@
+# Node dependencies
+node_modules/
+react-google-earth-test/node_modules/
+
+# Python cache and virtual envs
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Environment and secret files
+.env
+.env.*
+!**/.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.secret
+service-account*.json
+
+# Build/cache artifacts
+.dist/
+dist/
+.cache/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
