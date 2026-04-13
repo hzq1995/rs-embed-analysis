@@ -28,7 +28,7 @@ class EmbeddingIntroScenario(Scenario):
         return ScenarioDescriptor(
             scenario_id=self.scenario_id,
             name="嵌入可视化",
-            description="为当前视口内缩小的感兴趣区域构建嵌入 RGB 和 KMeans 聚类图层。",
+            description="为感兴趣区域快速构建Embedding聚类图层，支持一键矢量化。",
             status="ready",
             supported_inputs=[
                 "geometry",

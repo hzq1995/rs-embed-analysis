@@ -4,7 +4,7 @@ import { parseGeoTiffSamplePoints } from "./geotiffUtils";
 import { loadGoogleMaps } from "./googleMaps";
 
 const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
-const ROI_INSET_RATIO = 0.1;
+const ROI_INSET_RATIO = 0;
 const BAND_OPTIONS = Array.from({ length: 64 }, (_, index) =>
   `A${String(index).padStart(2, "0")}`
 );
@@ -183,6 +183,23 @@ function TileOverlay({ layer, onToggle, onOpacityChange }) {
   );
 }
 
+const PARAMS_STORAGE_KEY = "rs_embed_params";
+
+function loadStoredParams() {
+  try {
+    const raw = localStorage.getItem(PARAMS_STORAGE_KEY);
+    if (!raw) return defaultParams;
+    const stored = JSON.parse(raw);
+    return {
+      ...defaultParams,
+      ...stored,
+      includeVectorProbe: defaultParams.includeVectorProbe
+    };
+  } catch {
+    return defaultParams;
+  }
+}
+
 export default function App() {
   const mapHostRef = useRef(null);
   const mapRef = useRef(null);
@@ -201,7 +218,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [scenarios, setScenarios] = useState([]);
   const [selectedScenarioId, setSelectedScenarioId] = useState("embedding_intro");
-  const [params, setParams] = useState(defaultParams);
+  const [params, setParams] = useState(loadStoredParams);
   const [mapSnapshot, setMapSnapshot] = useState(null);
   const [layers, setLayers] = useState([]);
   const [summaries, setSummaries] = useState({});
@@ -210,6 +227,15 @@ export default function App() {
   const [uploadedTifMeta, setUploadedTifMeta] = useState(null);
   const [isParsingTif, setIsParsingTif] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(true);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(params));
+    } catch {
+      // ignore storage errors
+    }
+  }, [params]);
 
   const similarityMode = isSimilarityScenario(selectedScenarioId);
   const latestReferencePoint =
@@ -556,7 +582,7 @@ export default function App() {
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
-    setStatus(getScenarioHint(selectedScenarioId));
+    // setStatus(getScenarioHint(selectedScenarioId));
   }, [selectedScenarioId]);
 
   useEffect(() => {
@@ -708,7 +734,7 @@ export default function App() {
         Array.isArray(response.layers)
           ? response.layers.map((layer) => ({
               ...layer,
-              visible: true,
+              visible: layer.layer_id !== "embedding-rgb",
               opacity: typeof layer.opacity === "number" ? layer.opacity : 1
             }))
           : []
@@ -750,14 +776,14 @@ export default function App() {
     (similarityMode && referencePoints.length === 0);
 
   return (
-    <div className="appShell">
+    <div className={`appShell${isRightPanelCollapsed ? " panelCollapsed" : ""}`}>
       <aside className="leftPanel">
-        <p className="eyebrow">Geo Intelligence Platform</p>
-        <h1>遥感智能分析平台</h1>
-        <p className="intro">{getScenarioHint(selectedScenarioId)}</p>
+        <p className="eyebrow">自然资源部</p>
+        <h1>影像嵌入分析平台</h1>
+        {/* <p className="intro">{getScenarioHint(selectedScenarioId)}</p> */}
 
         <label className="field">
-          <span>场景</span>
+          <span></span>
           <select
             className="select"
             value={selectedScenarioId}
@@ -771,13 +797,14 @@ export default function App() {
           </select>
         </label>
 
-        <div className="scenarioBox">
-          <strong>{selectedScenario?.name || "Loading..."}</strong>
-          <p>{selectedScenario?.description || "正在加载场景说明..."}</p>
-          <span className={`statusPill ${selectedScenario?.status || "planned"}`}>
-            {selectedScenario?.status || "planned"}
-          </span>
-        </div>
+        <button
+          className="runBtn"
+          disabled={runDisabled}
+          onClick={runCurrentScenario}
+          type="button"
+        >
+          {isRunning ? "运行中..." : "运行当前场景"}
+        </button>
 
         <div className="controlRow">
           <button className="ghostBtn" onClick={clearScene} type="button">
@@ -808,11 +835,11 @@ export default function App() {
             <div className="metaBlock">
               <div>
                 <span className="metaLabel">文件</span>
-                <strong>{uploadedTifMeta?.fileName || "-"}</strong>
+                <strong title={uploadedTifMeta?.fileName}>{uploadedTifMeta?.fileName || "-"}</strong>
               </div>
               <div>
                 <span className="metaLabel">源坐标系</span>
-                <strong>{uploadedTifMeta?.sourceCrs || "-"}</strong>
+                <strong title={uploadedTifMeta?.sourceCrs}>{uploadedTifMeta?.sourceCrs || "-"}</strong>
               </div>
               <div>
                 <span className="metaLabel">取点数量</span>
@@ -872,23 +899,26 @@ export default function App() {
                 {selectedScenarioId === "image_retrieval" ? (
                   <>
                     <label className="field">
-                      <span>取点数量</span>
+                      <span>取点数量 <span className="paramValueBadge">{params.imageSampleCount}</span></span>
                       <input
                         name="imageSampleCount"
-                        type="number"
+                        type="range"
                         min="1"
                         max="100"
+                        step="1"
                         value={params.imageSampleCount}
                         onChange={handleParamChange}
                       />
                     </label>
 
                     <label className="field">
-                      <span>最大相邻间距 m</span>
+                      <span>最大相邻间距 m <span className="paramValueBadge">{params.imageMaxSpacingMeters}</span></span>
                       <input
                         name="imageMaxSpacingMeters"
-                        type="number"
+                        type="range"
                         min="1"
+                        max="200"
+                        step="1"
                         value={params.imageMaxSpacingMeters}
                         onChange={handleParamChange}
                       />
@@ -897,46 +927,51 @@ export default function App() {
                 ) : null}
 
                 <label className="field">
-                  <span>搜索边长 km</span>
+                  <span>搜索边长 km <span className="paramValueBadge">{params.searchSizeKm}</span></span>
                   <input
                     name="searchSizeKm"
-                    type="number"
+                    type="range"
                     min="1"
+                    max="50"
+                    step="1"
                     value={params.searchSizeKm}
                     onChange={handleParamChange}
                   />
                 </label>
 
                 <label className="field">
-                  <span>结果数量</span>
+                  <span>结果数量 <span className="paramValueBadge">{params.topK}</span></span>
                   <input
                     name="topK"
-                    type="number"
+                    type="range"
                     min="1"
                     max="100"
+                    step="1"
                     value={params.topK}
                     onChange={handleParamChange}
                   />
                 </label>
 
                 <label className="field">
-                  <span>Scale</span>
+                  <span>Scale <span className="paramValueBadge">{params.scale}</span></span>
                   <input
                     name="scale"
-                    type="number"
+                    type="range"
                     min="1"
+                    max="100"
+                    step="1"
                     value={params.scale}
                     onChange={handleParamChange}
                   />
                 </label>
 
                 <label className="field">
-                  <span>候选阈值</span>
+                  <span>候选阈值 <span className="paramValueBadge">{params.candidateThreshold}</span></span>
                   <input
                     name="candidateThreshold"
-                    type="number"
+                    type="range"
                     step="0.01"
-                    min="-1"
+                    min="0.5"
                     max="1"
                     value={params.candidateThreshold}
                     onChange={handleParamChange}
@@ -994,55 +1029,65 @@ export default function App() {
                 </label>
 
                 <label className="field">
-                  <span>RGB Min</span>
+                  <span>RGB Min <span className="paramValueBadge">{params.rgbMin}</span></span>
                   <input
                     name="rgbMin"
-                    type="number"
-                    step="0.1"
+                    type="range"
+                    min="-1"
+                    max="1"
+                    step="0.05"
                     value={params.rgbMin}
                     onChange={handleParamChange}
                   />
                 </label>
 
                 <label className="field">
-                  <span>RGB Max</span>
+                  <span>RGB Max <span className="paramValueBadge">{params.rgbMax}</span></span>
                   <input
                     name="rgbMax"
-                    type="number"
-                    step="0.1"
+                    type="range"
+                    min="-1"
+                    max="1"
+                    step="0.05"
                     value={params.rgbMax}
                     onChange={handleParamChange}
                   />
                 </label>
 
                 <label className="field">
-                  <span>聚类数</span>
+                  <span>聚类数 <span className="paramValueBadge">{params.clusterCount}</span></span>
                   <input
                     name="clusterCount"
-                    type="number"
+                    type="range"
                     min="2"
+                    max="20"
+                    step="1"
                     value={params.clusterCount}
                     onChange={handleParamChange}
                   />
                 </label>
 
                 <label className="field">
-                  <span>采样数</span>
+                  <span>采样数 <span className="paramValueBadge">{params.sampleCount}</span></span>
                   <input
                     name="sampleCount"
-                    type="number"
+                    type="range"
                     min="10"
+                    max="1000"
+                    step="10"
                     value={params.sampleCount}
                     onChange={handleParamChange}
                   />
                 </label>
 
                 <label className="field">
-                  <span>Scale</span>
+                  <span>Scale <span className="paramValueBadge">{params.scale}</span></span>
                   <input
                     name="scale"
-                    type="number"
+                    type="range"
                     min="1"
+                    max="100"
+                    step="1"
                     value={params.scale}
                     onChange={handleParamChange}
                   />
@@ -1072,64 +1117,79 @@ export default function App() {
           </div>
         </details>
 
-        <button
-          className="runBtn"
-          disabled={runDisabled}
-          onClick={runCurrentScenario}
-          type="button"
-        >
-          {isRunning ? "运行中..." : "运行当前场景"}
-        </button>
-
         <p className="statusLine">{status}</p>
         {error ? <p className="errorText">{error}</p> : null}
+
+        <div className="scenarioBox">
+          <strong>{selectedScenario?.name || "Loading..."}</strong>
+          <p>{selectedScenario?.description || "正在加载场景说明..."}</p>
+          <span className={`statusPill ${selectedScenario?.status || "planned"}`}>
+            {selectedScenario?.status || "planned"}
+          </span>
+        </div>
       </aside>
 
       <main className="mapPane">
         <div className="mapViewport" ref={mapHostRef} />
       </main>
 
-      <aside className="rightPanel">
-        <section className="sideSection">
-          <h2>图层</h2>
-          {layers.length === 0 ? (
-            <p className="placeholder">运行场景后，这里会显示可切换图层。</p>
-          ) : (
-            layers.map((layer) => (
-              <TileOverlay
-                key={layer.layer_id}
-                layer={layer}
-                onToggle={updateLayerVisibility}
-                onOpacityChange={updateLayerOpacity}
-              />
-            ))
-          )}
-        </section>
+      <aside className={`rightPanel${isRightPanelCollapsed ? " collapsed" : ""}`}>
+        <div className="rightPanelHeader">
+          <button
+            aria-label={isRightPanelCollapsed ? "展开右侧面板" : "折叠右侧面板"}
+            className="panelToggle"
+            onClick={() => setIsRightPanelCollapsed((current) => !current)}
+            title={isRightPanelCollapsed ? "展开右侧面板" : "折叠右侧面板"}
+            type="button"
+          >
+            {isRightPanelCollapsed ? "<" : ">"}
+          </button>
+        </div>
 
-        <section className="sideSection">
-          <h2>摘要</h2>
-          {Object.keys(summaries).length === 0 ? (
-            <p className="placeholder">暂无摘要结果。</p>
-          ) : (
-            <div className="summaryList">
-              {Object.entries(summaries).map(([key, value]) => (
-                <div className="summaryRow" key={key}>
-                  <span>{key}</span>
-                  <strong>{formatValue(value)}</strong>
+        {isRightPanelCollapsed ? null : (
+          <>
+            <section className="sideSection">
+              <h2>图层</h2>
+              {layers.length === 0 ? (
+                <p className="placeholder">运行场景后，这里会显示可切换图层。</p>
+              ) : (
+                layers.map((layer) => (
+                  <TileOverlay
+                    key={layer.layer_id}
+                    layer={layer}
+                    onToggle={updateLayerVisibility}
+                    onOpacityChange={updateLayerOpacity}
+                  />
+                ))
+              )}
+            </section>
+
+            <section className="sideSection">
+              <h2>摘要</h2>
+              {Object.keys(summaries).length === 0 ? (
+                <p className="placeholder">暂无摘要结果。</p>
+              ) : (
+                <div className="summaryList">
+                  {Object.entries(summaries).map(([key, value]) => (
+                    <div className="summaryRow" key={key}>
+                      <span>{key}</span>
+                      <strong>{formatValue(value)}</strong>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
+              )}
+            </section>
 
-        <section className="sideSection">
-          <h2>Artifacts</h2>
-          {Object.keys(artifacts).length === 0 ? (
-            <p className="placeholder">当前没有额外 artifacts。</p>
-          ) : (
-            <pre className="artifactBox">{JSON.stringify(artifacts, null, 2)}</pre>
-          )}
-        </section>
+            <section className="sideSection">
+              <h2>Artifacts</h2>
+              {Object.keys(artifacts).length === 0 ? (
+                <p className="placeholder">当前没有额外 artifacts。</p>
+              ) : (
+                <pre className="artifactBox">{JSON.stringify(artifacts, null, 2)}</pre>
+              )}
+            </section>
+          </>
+        )}
       </aside>
     </div>
   );

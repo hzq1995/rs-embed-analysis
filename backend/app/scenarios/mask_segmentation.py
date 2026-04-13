@@ -20,8 +20,8 @@ class ImageRetrievalScenario(Scenario):
     def descriptor(self) -> ScenarioDescriptor:
         return ScenarioDescriptor(
             scenario_id=self.scenario_id,
-            name="图像检索",
-            description="对上传的 GeoTIFF 均匀取点，并用平均 embedding 在当前地图中心周围执行相似度搜索。",
+            name="语义检索",
+            description="对上传的 GeoTIFF 均匀采样，快速执行基于语义的相似度检索。",
             status="ready",
             supported_inputs=[
                 "tif_sample_points",
