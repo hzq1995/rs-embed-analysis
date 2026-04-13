@@ -20,11 +20,11 @@ class ImageRetrievalScenario(Scenario):
     def descriptor(self) -> ScenarioDescriptor:
         return ScenarioDescriptor(
             scenario_id=self.scenario_id,
-            name="Image Retrieval",
-            description="Parse the uploaded GeoTIFF center and run similarity search around the current map center.",
+            name="图像检索",
+            description="对上传的 GeoTIFF 均匀取点，并用平均 embedding 在当前地图中心周围执行相似度搜索。",
             status="ready",
             supported_inputs=[
-                "tif_center",
+                "tif_sample_points",
                 "search_center",
                 "search_size_km",
                 "top_k",
@@ -47,7 +47,7 @@ class ImageRetrievalScenario(Scenario):
                     name="Similarity Matches",
                     geojson=result["geojson"],
                     metadata={
-                        "source_mode": "tif_center",
+                        "source_mode": "tif_sample_points",
                         "result_count": len(result["matches"]),
                     },
                 )

@@ -6,7 +6,7 @@ from functools import lru_cache
 
 class Settings:
     def __init__(self) -> None:
-        self.ee_project = os.getenv("EE_PROJECT", "kaggle-350509")
+        self.ee_project = os.getenv("EE_PROJECT", "promising-booth-469406-h8")  # "kaggle-350509"
         self.ee_auth_mode = os.getenv("EE_AUTH_MODE") or None
         self.allowed_origins = [
             origin.strip()

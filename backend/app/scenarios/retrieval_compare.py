@@ -20,8 +20,8 @@ class ClickQueryScenario(Scenario):
     def descriptor(self) -> ScenarioDescriptor:
         return ScenarioDescriptor(
             scenario_id=self.scenario_id,
-            name="Click Query",
-            description="Use a clicked map point as the reference and run similarity search around the current map center.",
+            name="点击查询",
+            description="以地图上点击的位置作为参考，在当前地图中心周围执行相似度搜索。",
             status="ready",
             supported_inputs=[
                 "click_point",

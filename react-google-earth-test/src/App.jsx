@@ -1,6 +1,6 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import { fetchScenarios, runScenario } from "./api";
-import { parseGeoTiffCenter } from "./geotiffUtils";
+import { parseGeoTiffSamplePoints } from "./geotiffUtils";
 import { loadGoogleMaps } from "./googleMaps";
 
 const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
@@ -18,13 +18,15 @@ const defaultParams = {
   rgbMin: -0.3,
   rgbMax: 0.3,
   clusterCount: 5,
-  sampleCount: 100,
+  sampleCount: 300,
   scale: 10,
   seed: 100,
   includeVectorProbe: false,
-  searchSizeKm: 10,
+  searchSizeKm: 3,
   topK: 10,
-  candidateThreshold: 0.9
+  candidateThreshold: 0.9,
+  imageSampleCount: 9,
+  imageMaxSpacingMeters: 10
 };
 
 function isSimilarityScenario(scenarioId) {
@@ -63,24 +65,6 @@ function buildViewportInsetPolygon(bounds, insetRatio = ROI_INSET_RATIO) {
     { lat: north - latPadding, lng: east - lngPadding },
     { lat: south + latPadding, lng: east - lngPadding },
     { lat: south + latPadding, lng: west + lngPadding }
-  ];
-}
-
-function buildSquarePolygon(center, sizeKm) {
-  if (!center || !Number.isFinite(sizeKm) || sizeKm <= 0) {
-    return [];
-  }
-
-  const halfSideMeters = sizeKm * 500;
-  const latDelta = halfSideMeters / 111320;
-  const lngDivider = 111320 * Math.cos((center.lat * Math.PI) / 180);
-  const lngDelta = halfSideMeters / Math.max(Math.abs(lngDivider), 1e-6);
-
-  return [
-    { lat: center.lat + latDelta, lng: center.lng - lngDelta },
-    { lat: center.lat + latDelta, lng: center.lng + lngDelta },
-    { lat: center.lat - latDelta, lng: center.lng + lngDelta },
-    { lat: center.lat - latDelta, lng: center.lng - lngDelta }
   ];
 }
 
@@ -131,9 +115,34 @@ function formatCoordinate(point) {
   return `${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`;
 }
 
+function extractPointFeatures(layer) {
+  if (
+    layer?.layer_type !== "point_collection" ||
+    layer?.geojson?.type !== "FeatureCollection"
+  ) {
+    return [];
+  }
+
+  const features = Array.isArray(layer.geojson.features) ? layer.geojson.features : [];
+  return features
+    .map((feature) => {
+      if (feature?.geometry?.type !== "Point") {
+        return null;
+      }
+
+      const [lng, lat] = feature.geometry.coordinates || [];
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return null;
+      }
+
+      return { lat, lng };
+    })
+    .filter(Boolean);
+}
+
 function getScenarioHint(scenarioId) {
   if (scenarioId === "image_retrieval") {
-    return "上传 GeoTIFF，解析中心点后运行相似检索。";
+    return "上传 GeoTIFF，均匀取点后用平均 embedding 运行相似检索，参考点最大相邻间距默认 10 米。";
   }
   if (scenarioId === "click_query") {
     return "点击地图可连续添加多个参考点，系统会用平均 embedding 做检索。";
@@ -179,12 +188,13 @@ export default function App() {
   const mapRef = useRef(null);
   const mapsRef = useRef(null);
   const listenersRef = useRef([]);
-  const polygonRef = useRef(null);
   const referenceMarkersRef = useRef([]);
   const resultMarkersRef = useRef([]);
   const infoWindowRef = useRef(null);
   const fileInputRef = useRef(null);
+  const uploadedTifFileRef = useRef(null);
   const selectedScenarioIdRef = useRef("embedding_intro");
+  const pendingAutoFitRef = useRef(false);
 
   const [mapReady, setMapReady] = useState(false);
   const [status, setStatus] = useState("正在加载地图和场景配置...");
@@ -193,7 +203,6 @@ export default function App() {
   const [selectedScenarioId, setSelectedScenarioId] = useState("embedding_intro");
   const [params, setParams] = useState(defaultParams);
   const [mapSnapshot, setMapSnapshot] = useState(null);
-  const [analysisPolygonPoints, setAnalysisPolygonPoints] = useState([]);
   const [layers, setLayers] = useState([]);
   const [summaries, setSummaries] = useState({});
   const [artifacts, setArtifacts] = useState({});
@@ -201,11 +210,42 @@ export default function App() {
   const [uploadedTifMeta, setUploadedTifMeta] = useState(null);
   const [isParsingTif, setIsParsingTif] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
-  const [previewVisible, setPreviewVisible] = useState(true);
 
   const similarityMode = isSimilarityScenario(selectedScenarioId);
   const latestReferencePoint =
     referencePoints.length > 0 ? referencePoints[referencePoints.length - 1] : null;
+
+  async function parseUploadedTif(file, sampleCount, maxSpacingMeters) {
+    setIsParsingTif(true);
+    setError("");
+    setStatus("正在解析 GeoTIFF 采样点...");
+
+    try {
+      const tifData = await parseGeoTiffSamplePoints(
+        file,
+        sampleCount,
+        maxSpacingMeters
+      );
+      const samplePoints = tifData.samplePoints || [];
+
+      setReferencePoints(samplePoints);
+      setUploadedTifMeta({
+        fileName: file.name,
+        sourceCrs: tifData.sourceCrs,
+        samplePointCount: samplePoints.length,
+        firstPoint: samplePoints[0] || null,
+        maxSpacingMeters
+      });
+      setStatus("GeoTIFF 解析完成，可运行图片检索。");
+    } catch (parseError) {
+      setUploadedTifMeta(null);
+      setReferencePoints([]);
+      setError(parseError.message);
+      setStatus("GeoTIFF 解析失败。");
+    } finally {
+      setIsParsingTif(false);
+    }
+  }
 
   useEffect(() => {
     selectedScenarioIdRef.current = selectedScenarioId;
@@ -229,7 +269,6 @@ export default function App() {
         mapsRef.current = {
           maps,
           Map: mapsLib.Map,
-          Polygon: google.maps.Polygon,
           Marker: google.maps.Marker,
           InfoWindow: google.maps.InfoWindow,
           Size: google.maps.Size
@@ -251,7 +290,6 @@ export default function App() {
           const snapshot = extractMapSnapshot(map);
           if (snapshot) {
             setMapSnapshot(snapshot);
-            setPreviewVisible(true);
           }
         };
 
@@ -276,7 +314,6 @@ export default function App() {
             ]);
             setError("");
             setStatus("已添加参考点，可继续选点或直接运行查询。");
-            setPreviewVisible(true);
           })
         ];
 
@@ -309,61 +346,10 @@ export default function App() {
       resultMarkersRef.current = [];
       referenceMarkersRef.current.forEach((marker) => marker.setMap(null));
       referenceMarkersRef.current = [];
-      polygonRef.current?.setMap?.(null);
       mapRef.current = null;
       mapsRef.current = null;
     };
   }, []);
-
-  useEffect(() => {
-    if (!previewVisible) {
-      setAnalysisPolygonPoints([]);
-      return;
-    }
-
-    if (selectedScenarioId === "embedding_intro") {
-      setAnalysisPolygonPoints(buildViewportInsetPolygon(mapSnapshot?.bounds));
-      return;
-    }
-
-    if (similarityMode) {
-      setAnalysisPolygonPoints(
-        buildSquarePolygon(mapSnapshot?.center, Number(params.searchSizeKm))
-      );
-      return;
-    }
-
-    setAnalysisPolygonPoints([]);
-  }, [mapSnapshot, params.searchSizeKm, previewVisible, selectedScenarioId, similarityMode]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    const mapClasses = mapsRef.current;
-    if (!map || !mapClasses) {
-      return;
-    }
-
-    if (!polygonRef.current) {
-      polygonRef.current = new mapClasses.Polygon({
-        map,
-        paths: [],
-        strokeColor: "#0f766e",
-        strokeOpacity: 0.95,
-        strokeWeight: 2,
-        fillColor: "#2dd4bf",
-        fillOpacity: 0.1,
-        editable: false,
-        clickable: false
-      });
-    }
-
-    if (analysisPolygonPoints.length < 3) {
-      polygonRef.current.setPaths([]);
-      return;
-    }
-
-    polygonRef.current.setPaths(analysisPolygonPoints);
-  }, [analysisPolygonPoints]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -527,27 +513,73 @@ export default function App() {
   }, [layers]);
 
   useEffect(() => {
+    if (!pendingAutoFitRef.current || !similarityMode) {
+      return;
+    }
+
+    const map = mapRef.current;
+    const mapsApi = mapsRef.current?.maps;
+    if (!map || !mapsApi) {
+      return;
+    }
+
+    const resultPoints = layers.flatMap(extractPointFeatures);
+    const allPoints = [...referencePoints, ...resultPoints];
+
+    if (allPoints.length === 0) {
+      pendingAutoFitRef.current = false;
+      return;
+    }
+
+    if (allPoints.length === 1) {
+      map.panTo(allPoints[0]);
+      map.setZoom(17);
+      pendingAutoFitRef.current = false;
+      return;
+    }
+
+    const bounds = new mapsApi.LatLngBounds();
+    allPoints.forEach((point) => bounds.extend(point));
+    map.fitBounds(bounds, 80);
+    pendingAutoFitRef.current = false;
+  }, [layers, referencePoints, similarityMode]);
+
+  useEffect(() => {
+    pendingAutoFitRef.current = false;
     setLayers([]);
     setSummaries({});
     setArtifacts({});
     setError("");
     setReferencePoints([]);
     setUploadedTifMeta(null);
-    setPreviewVisible(true);
+    uploadedTifFileRef.current = null;
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
     setStatus(getScenarioHint(selectedScenarioId));
   }, [selectedScenarioId]);
 
+  useEffect(() => {
+    if (selectedScenarioId !== "image_retrieval" || !uploadedTifFileRef.current) {
+      return;
+    }
+
+    parseUploadedTif(
+      uploadedTifFileRef.current,
+      params.imageSampleCount,
+      params.imageMaxSpacingMeters
+    );
+  }, [params.imageSampleCount, params.imageMaxSpacingMeters, selectedScenarioId]);
+
   function clearScene() {
+    pendingAutoFitRef.current = false;
     setLayers([]);
     setSummaries({});
     setArtifacts({});
     setReferencePoints([]);
     setUploadedTifMeta(null);
+    uploadedTifFileRef.current = null;
     setError("");
-    setPreviewVisible(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -558,7 +590,6 @@ export default function App() {
     setReferencePoints([]);
     setError("");
     setStatus("已清空点击参考点。");
-    setPreviewVisible(true);
   }
 
   function handleParamChange(event) {
@@ -572,6 +603,8 @@ export default function App() {
                 "year",
                 "clusterCount",
                 "sampleCount",
+                "imageSampleCount",
+                "imageMaxSpacingMeters",
                 "scale",
                 "seed",
                 "searchSizeKm",
@@ -582,44 +615,23 @@ export default function App() {
               ? Number(value)
               : value
     }));
-    setPreviewVisible(true);
   }
 
   async function handleTifUpload(event) {
     const file = event.target.files?.[0];
     if (!file) {
+      uploadedTifFileRef.current = null;
       setUploadedTifMeta(null);
       setReferencePoints([]);
       return;
     }
 
-    setIsParsingTif(true);
-    setError("");
-    setStatus("正在解析 GeoTIFF 中心点...");
-
-    try {
-      const center = await parseGeoTiffCenter(file);
-      const point = {
-        lat: center.lat,
-        lng: center.lng
-      };
-
-      setReferencePoints([point]);
-      setUploadedTifMeta({
-        fileName: file.name,
-        sourceCrs: center.sourceCrs,
-        point
-      });
-      setPreviewVisible(true);
-      setStatus("GeoTIFF 解析完成，可运行图片检索。");
-    } catch (parseError) {
-      setUploadedTifMeta(null);
-      setReferencePoints([]);
-      setError(parseError.message);
-      setStatus("GeoTIFF 解析失败。");
-    } finally {
-      setIsParsingTif(false);
-    }
+    uploadedTifFileRef.current = file;
+    await parseUploadedTif(
+      file,
+      params.imageSampleCount,
+      params.imageMaxSpacingMeters
+    );
   }
 
   async function runCurrentScenario() {
@@ -639,7 +651,7 @@ export default function App() {
 
     setIsRunning(true);
     setError("");
-    setStatus("正在请求 Earth Engine 分析...");
+    setStatus("正在请求引擎分析...");
 
     try {
       let payload;
@@ -677,16 +689,10 @@ export default function App() {
         }
 
         payload = {
-          ...(selectedScenarioId === "click_query"
-            ? {
-                reference_points: referencePoints.map((point) => [
-                  point.lng,
-                  point.lat
-                ])
-              }
-            : {
-                reference_point: [referencePoints[0].lng, referencePoints[0].lat]
-              }),
+          reference_points: referencePoints.map((point) => [
+            point.lng,
+            point.lat
+          ]),
           search_center: [mapSnapshot.center.lng, mapSnapshot.center.lat],
           search_size_km: params.searchSizeKm,
           top_k: params.topK,
@@ -697,6 +703,7 @@ export default function App() {
       }
 
       const response = await runScenario(selectedScenarioId, payload);
+      pendingAutoFitRef.current = isSimilarityScenario(selectedScenarioId);
       setLayers(
         Array.isArray(response.layers)
           ? response.layers.map((layer) => ({
@@ -708,7 +715,6 @@ export default function App() {
       );
       setSummaries(response.summaries || {});
       setArtifacts(response.artifacts || {});
-      setPreviewVisible(true);
       setStatus("分析完成，结果已叠加到地图上。");
     } catch (runError) {
       setError(runError.message);
@@ -747,7 +753,7 @@ export default function App() {
     <div className="appShell">
       <aside className="leftPanel">
         <p className="eyebrow">Geo Intelligence Platform</p>
-        <h1>地图智能分析平台</h1>
+        <h1>遥感智能分析平台</h1>
         <p className="intro">{getScenarioHint(selectedScenarioId)}</p>
 
         <label className="field">
@@ -809,8 +815,20 @@ export default function App() {
                 <strong>{uploadedTifMeta?.sourceCrs || "-"}</strong>
               </div>
               <div>
-                <span className="metaLabel">中心点</span>
-                <strong>{formatCoordinate(uploadedTifMeta?.point)}</strong>
+                <span className="metaLabel">取点数量</span>
+                <strong>{uploadedTifMeta?.samplePointCount || 0}</strong>
+              </div>
+              <div>
+                <span className="metaLabel">最大相邻间距</span>
+                <strong>
+                  {uploadedTifMeta?.maxSpacingMeters != null
+                    ? `${uploadedTifMeta.maxSpacingMeters} m`
+                    : "-"}
+                </strong>
+              </div>
+              <div>
+                <span className="metaLabel">首个采样点</span>
+                <strong>{formatCoordinate(uploadedTifMeta?.firstPoint)}</strong>
               </div>
             </div>
           </div>
@@ -835,7 +853,7 @@ export default function App() {
           </div>
         ) : null}
 
-        <details className="paramsPanel" open>
+        <details className="paramsPanel">
           <summary className="paramsSummary">参数设置</summary>
           <div className="fieldGrid">
             <label className="field">
@@ -851,6 +869,33 @@ export default function App() {
 
             {similarityMode ? (
               <>
+                {selectedScenarioId === "image_retrieval" ? (
+                  <>
+                    <label className="field">
+                      <span>取点数量</span>
+                      <input
+                        name="imageSampleCount"
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={params.imageSampleCount}
+                        onChange={handleParamChange}
+                      />
+                    </label>
+
+                    <label className="field">
+                      <span>最大相邻间距 m</span>
+                      <input
+                        name="imageMaxSpacingMeters"
+                        type="number"
+                        min="1"
+                        value={params.imageMaxSpacingMeters}
+                        onChange={handleParamChange}
+                      />
+                    </label>
+                  </>
+                ) : null}
+
                 <label className="field">
                   <span>搜索边长 km</span>
                   <input
