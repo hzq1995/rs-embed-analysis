@@ -2,25 +2,56 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from backend.app.schemas.common import MaskSegmentationRequest, ScenarioDescriptor, ScenarioRunResponse
+from backend.app.schemas.common import (
+    LayerModel,
+    ScenarioDescriptor,
+    ScenarioRunResponse,
+    SimilaritySearchRequest,
+)
 from backend.app.scenarios.base import Scenario
+from backend.app.services.similarity_search_service import run_similarity_search
 
 
-class MaskSegmentationScenario(Scenario):
-    scenario_id = "mask_segmentation"
-    request_model = MaskSegmentationRequest
+class ImageRetrievalScenario(Scenario):
+    scenario_id = "image_retrieval"
+    request_model = SimilaritySearchRequest
 
     @property
     def descriptor(self) -> ScenarioDescriptor:
         return ScenarioDescriptor(
             scenario_id=self.scenario_id,
-            name="分割 Mask",
-            description="预留给后续栅格或矢量 Mask 生成流程的场景。",
-            status="planned",
-            supported_inputs=["geometry", "year", "model_id", "threshold", "postprocess"],
-            supported_outputs=["raster_tile", "vector_geojson"],
+            name="Image Retrieval",
+            description="Parse the uploaded GeoTIFF center and run similarity search around the current map center.",
+            status="ready",
+            supported_inputs=[
+                "tif_center",
+                "search_center",
+                "search_size_km",
+                "top_k",
+                "year",
+                "scale",
+                "candidate_threshold",
+            ],
+            supported_outputs=["point_collection", "summary_only"],
         )
 
     def run(self, payload: Dict[str, Any]) -> ScenarioRunResponse:
-        self.request_model.model_validate(payload)
-        raise NotImplementedError("mask_segmentation is planned but not implemented in v1.")
+        request_model = self.request_model.model_validate(payload)
+        result = run_similarity_search(request_model)
+        return ScenarioRunResponse(
+            request_echo=request_model.model_dump(),
+            layers=[
+                LayerModel(
+                    layer_id="image-retrieval-matches",
+                    layer_type="point_collection",
+                    name="Similarity Matches",
+                    geojson=result["geojson"],
+                    metadata={
+                        "source_mode": "tif_center",
+                        "result_count": len(result["matches"]),
+                    },
+                )
+            ],
+            summaries=result["summaries"],
+            artifacts={"matches": result["matches"]},
+        )

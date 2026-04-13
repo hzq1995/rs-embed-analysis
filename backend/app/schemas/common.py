@@ -17,6 +17,17 @@ BandName = Literal[
 ]
 
 
+def validate_point_coordinates(value: List[float], field_name: str) -> List[float]:
+    if len(value) != 2:
+        raise ValueError(f"{field_name} must contain [lng, lat].")
+
+    lng, lat = value
+    if not (-180 <= lng <= 180 and -90 <= lat <= 90):
+        raise ValueError(f"{field_name} is outside valid longitude/latitude bounds.")
+
+    return [float(lng), float(lat)]
+
+
 class AppBaseModel(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
@@ -122,32 +133,45 @@ class EmbeddingIntroRequest(AppBaseModel):
         return rgb_bands
 
 
-class MaskSegmentationRequest(AppBaseModel):
-    geometry: GeoJsonPolygon
-    year: int = Field(default=2024, ge=2017, le=2100)
-    model_id: str = "planned-mask-model"
-    threshold: float = Field(default=0.5, ge=0, le=1)
-    postprocess: Optional[Dict[str, Any]] = None
-
-
-class RetrievalCompareRequest(AppBaseModel):
-    geometry: Optional[GeoJsonPolygon] = None
-    point: Optional[List[float]] = None
-    year: int = Field(default=2024, ge=2017, le=2100)
+class SimilaritySearchRequest(AppBaseModel):
+    reference_point: Optional[List[float]] = None
+    reference_points: Optional[List[List[float]]] = None
+    search_center: List[float]
+    search_size_km: float = Field(default=10, gt=0, le=500)
     top_k: int = Field(default=10, ge=1, le=100)
-    compare_year: Optional[int] = Field(default=None, ge=2017, le=2100)
-    search_region: Optional[GeoJsonPolygon] = None
+    year: int = Field(default=2024, ge=2017, le=2100)
+    scale: float = Field(default=10, gt=0)
+    candidate_threshold: float = Field(default=0.90, ge=-1, le=1)
+
+    @field_validator("reference_point")
+    @classmethod
+    def validate_reference_point(cls, value: Optional[List[float]]) -> Optional[List[float]]:
+        if value is None:
+            return value
+        return validate_point_coordinates(value, "reference_point")
+
+    @field_validator("reference_points")
+    @classmethod
+    def validate_reference_points(
+        cls,
+        value: Optional[List[List[float]]],
+    ) -> Optional[List[List[float]]]:
+        if value is None:
+            return value
+        if len(value) == 0:
+            raise ValueError("reference_points must not be empty.")
+        return [
+            validate_point_coordinates(point, f"reference_points[{index}]")
+            for index, point in enumerate(value)
+        ]
+
+    @field_validator("search_center")
+    @classmethod
+    def validate_search_center(cls, value: List[float]) -> List[float]:
+        return validate_point_coordinates(value, "search_center")
 
     @model_validator(mode="after")
-    def validate_input_shape(self) -> "RetrievalCompareRequest":
-        if self.geometry is None and self.point is None:
-            raise ValueError("Either geometry or point must be provided.")
-
-        if self.point is not None:
-            if len(self.point) != 2:
-                raise ValueError("point must contain [lng, lat].")
-            lng, lat = self.point
-            if not (-180 <= lng <= 180 and -90 <= lat <= 90):
-                raise ValueError("point is outside valid longitude/latitude bounds.")
-
+    def validate_reference_inputs(self) -> "SimilaritySearchRequest":
+        if self.reference_point is None and self.reference_points is None:
+            raise ValueError("Either reference_point or reference_points must be provided.")
         return self

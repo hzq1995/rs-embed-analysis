@@ -140,6 +140,41 @@ h2 {
   margin-bottom: 16px;
 }
 
+.paramsPanel {
+  margin-bottom: 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.paramsSummary {
+  padding: 14px 16px;
+  cursor: pointer;
+  font-weight: 600;
+  color: #111827;
+  list-style: none;
+}
+
+.paramsSummary::-webkit-details-marker {
+  display: none;
+}
+
+.paramsSummary::after {
+  content: "+";
+  float: right;
+  color: #2563eb;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.paramsPanel[open] .paramsSummary::after {
+  content: "-";
+}
+
+.paramsPanel .fieldGrid {
+  padding: 0 16px 16px;
+}
+
 .controlRow {
   display: flex;
   flex-wrap: wrap;
@@ -282,6 +317,12 @@ h2 {
   overflow-x: auto;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.mapInfoWindow {
+  color: #111827;
+  line-height: 1.5;
+  min-width: 120px;
 }
 
 @media (max-width: 1200px) {

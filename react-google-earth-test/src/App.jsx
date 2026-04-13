@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { fetchScenarios, runScenario } from "./api";
+import { parseGeoTiffCenter } from "./geotiffUtils";
 import { loadGoogleMaps } from "./googleMaps";
 
 const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+const ROI_INSET_RATIO = 0.1;
 const BAND_OPTIONS = Array.from({ length: 64 }, (_, index) =>
   `A${String(index).padStart(2, "0")}`
 );
+const SIMILARITY_SCENARIOS = new Set(["image_retrieval", "click_query"]);
 
 const defaultParams = {
   year: 2024,
@@ -18,8 +21,15 @@ const defaultParams = {
   sampleCount: 100,
   scale: 10,
   seed: 100,
-  includeVectorProbe: false
+  includeVectorProbe: false,
+  searchSizeKm: 10,
+  topK: 10,
+  candidateThreshold: 0.9
 };
+
+function isSimilarityScenario(scenarioId) {
+  return SIMILARITY_SCENARIOS.has(scenarioId);
+}
 
 function buildGeoJsonPolygon(points) {
   const coordinates = points.map((point) => [point.lng, point.lat]);
@@ -39,16 +49,63 @@ function buildGeoJsonPolygon(points) {
   };
 }
 
-function readPath(path) {
-  const points = [];
-  for (let index = 0; index < path.getLength(); index += 1) {
-    const point = path.getAt(index);
-    points.push({
-      lat: point.lat(),
-      lng: point.lng()
-    });
+function buildViewportInsetPolygon(bounds, insetRatio = ROI_INSET_RATIO) {
+  if (!bounds) {
+    return [];
   }
-  return points;
+
+  const { north, east, south, west } = bounds;
+  const latPadding = (north - south) * insetRatio;
+  const lngPadding = (east - west) * insetRatio;
+
+  return [
+    { lat: north - latPadding, lng: west + lngPadding },
+    { lat: north - latPadding, lng: east - lngPadding },
+    { lat: south + latPadding, lng: east - lngPadding },
+    { lat: south + latPadding, lng: west + lngPadding }
+  ];
+}
+
+function buildSquarePolygon(center, sizeKm) {
+  if (!center || !Number.isFinite(sizeKm) || sizeKm <= 0) {
+    return [];
+  }
+
+  const halfSideMeters = sizeKm * 500;
+  const latDelta = halfSideMeters / 111320;
+  const lngDivider = 111320 * Math.cos((center.lat * Math.PI) / 180);
+  const lngDelta = halfSideMeters / Math.max(Math.abs(lngDivider), 1e-6);
+
+  return [
+    { lat: center.lat + latDelta, lng: center.lng - lngDelta },
+    { lat: center.lat + latDelta, lng: center.lng + lngDelta },
+    { lat: center.lat - latDelta, lng: center.lng + lngDelta },
+    { lat: center.lat - latDelta, lng: center.lng - lngDelta }
+  ];
+}
+
+function extractMapSnapshot(map) {
+  const center = map.getCenter();
+  const bounds = map.getBounds();
+  const northEast = bounds?.getNorthEast();
+  const southWest = bounds?.getSouthWest();
+
+  if (!center || !northEast || !southWest) {
+    return null;
+  }
+
+  return {
+    center: {
+      lat: center.lat(),
+      lng: center.lng()
+    },
+    bounds: {
+      north: northEast.lat(),
+      east: northEast.lng(),
+      south: southWest.lat(),
+      west: southWest.lng()
+    }
+  };
 }
 
 function formatValue(value) {
@@ -56,7 +113,7 @@ function formatValue(value) {
     return "-";
   }
   if (typeof value === "number") {
-    return Number.isInteger(value) ? String(value) : value.toFixed(2);
+    return Number.isInteger(value) ? String(value) : value.toFixed(6);
   }
   if (Array.isArray(value)) {
     return value.join(", ");
@@ -67,7 +124,26 @@ function formatValue(value) {
   return String(value);
 }
 
+function formatCoordinate(point) {
+  if (!point) {
+    return "-";
+  }
+  return `${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`;
+}
+
+function getScenarioHint(scenarioId) {
+  if (scenarioId === "image_retrieval") {
+    return "上传 GeoTIFF，解析中心点后运行相似检索。";
+  }
+  if (scenarioId === "click_query") {
+    return "点击地图可连续添加多个参考点，系统会用平均 embedding 做检索。";
+  }
+  return "当前视野会生成一个内缩 ROI，并叠加嵌入分析图层。";
+}
+
 function TileOverlay({ layer, onToggle, onOpacityChange }) {
+  const supportsOpacity = layer.layer_type === "raster_tile";
+
   return (
     <div className="layerCard">
       <label className="layerHeader">
@@ -79,19 +155,21 @@ function TileOverlay({ layer, onToggle, onOpacityChange }) {
         <span>{layer.name}</span>
       </label>
       <div className="layerMeta">{layer.layer_type}</div>
-      <label className="sliderRow">
-        <span>透明度</span>
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={layer.opacity}
-          onChange={(event) =>
-            onOpacityChange(layer.layer_id, Number(event.target.value))
-          }
-        />
-      </label>
+      {supportsOpacity ? (
+        <label className="sliderRow">
+          <span>透明度</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={layer.opacity}
+            onChange={(event) =>
+              onOpacityChange(layer.layer_id, Number(event.target.value))
+            }
+          />
+        </label>
+      ) : null}
     </div>
   );
 }
@@ -100,28 +178,38 @@ export default function App() {
   const mapHostRef = useRef(null);
   const mapRef = useRef(null);
   const mapsRef = useRef(null);
-  const drawingRef = useRef(false);
-  const roiClosedRef = useRef(false);
-  const tempLineRef = useRef(null);
+  const listenersRef = useRef([]);
   const polygonRef = useRef(null);
-  const markersRef = useRef([]);
-  const polygonListenersRef = useRef([]);
+  const referenceMarkersRef = useRef([]);
+  const resultMarkersRef = useRef([]);
+  const infoWindowRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const selectedScenarioIdRef = useRef("embedding_intro");
+
   const [mapReady, setMapReady] = useState(false);
   const [status, setStatus] = useState("正在加载地图和场景配置...");
   const [error, setError] = useState("");
   const [scenarios, setScenarios] = useState([]);
   const [selectedScenarioId, setSelectedScenarioId] = useState("embedding_intro");
   const [params, setParams] = useState(defaultParams);
-  const [roiPoints, setRoiPoints] = useState([]);
-  const [roiClosed, setRoiClosed] = useState(false);
-  const [isDrawing, setIsDrawing] = useState(false);
+  const [mapSnapshot, setMapSnapshot] = useState(null);
+  const [analysisPolygonPoints, setAnalysisPolygonPoints] = useState([]);
   const [layers, setLayers] = useState([]);
   const [summaries, setSummaries] = useState({});
   const [artifacts, setArtifacts] = useState({});
+  const [referencePoints, setReferencePoints] = useState([]);
+  const [uploadedTifMeta, setUploadedTifMeta] = useState(null);
+  const [isParsingTif, setIsParsingTif] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [previewVisible, setPreviewVisible] = useState(true);
 
-  drawingRef.current = isDrawing;
-  roiClosedRef.current = roiClosed;
+  const similarityMode = isSimilarityScenario(selectedScenarioId);
+  const latestReferencePoint =
+    referencePoints.length > 0 ? referencePoints[referencePoints.length - 1] : null;
+
+  useEffect(() => {
+    selectedScenarioIdRef.current = selectedScenarioId;
+  }, [selectedScenarioId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,7 +221,6 @@ export default function App() {
           loadGoogleMaps(MAPS_API_KEY)
         ]);
         const mapsLib = await maps.importLibrary("maps");
-        const markerLib = await maps.importLibrary("marker");
 
         if (cancelled || !mapHostRef.current) {
           return;
@@ -142,37 +229,68 @@ export default function App() {
         mapsRef.current = {
           maps,
           Map: mapsLib.Map,
-          Polyline: google.maps.Polyline,
           Polygon: google.maps.Polygon,
-          LatLngBounds: google.maps.LatLngBounds,
-          Size: google.maps.Size,
-          Marker: markerLib.Marker || google.maps.Marker
+          Marker: google.maps.Marker,
+          InfoWindow: google.maps.InfoWindow,
+          Size: google.maps.Size
         };
 
         const map = new mapsRef.current.Map(mapHostRef.current, {
           center: { lat: 29.8683, lng: 121.544 },
-          zoom: 12,
+          zoom: 17,
           mapTypeId: "satellite",
           streetViewControl: false,
           fullscreenControl: true,
           mapTypeControl: false
         });
 
-        map.addListener("click", (event) => {
-          if (!drawingRef.current || roiClosedRef.current) {
-            return;
-          }
-
-          setRoiPoints((current) => [
-            ...current,
-            { lat: event.latLng.lat(), lng: event.latLng.lng() }
-          ]);
-        });
-
         mapRef.current = map;
+        infoWindowRef.current = new mapsRef.current.InfoWindow();
+
+        const updateSnapshot = () => {
+          const snapshot = extractMapSnapshot(map);
+          if (snapshot) {
+            setMapSnapshot(snapshot);
+            setPreviewVisible(true);
+          }
+        };
+
+        listenersRef.current = [
+          map.addListener("idle", updateSnapshot),
+          map.addListener("click", (event) => {
+            if (selectedScenarioIdRef.current !== "click_query") {
+              return;
+            }
+
+            const latLng = event.latLng;
+            if (!latLng) {
+              return;
+            }
+
+            setReferencePoints((current) => [
+              ...current,
+              {
+                lat: latLng.lat(),
+                lng: latLng.lng()
+              }
+            ]);
+            setError("");
+            setStatus("已添加参考点，可继续选点或直接运行查询。");
+            setPreviewVisible(true);
+          })
+        ];
+
         setScenarios(scenarioResponse);
+        if (
+          !scenarioResponse.some(
+            (scenario) => scenario.scenario_id === selectedScenarioIdRef.current
+          )
+        ) {
+          setSelectedScenarioId(scenarioResponse[0]?.scenario_id || "embedding_intro");
+        }
         setMapReady(true);
-        setStatus("地图已就绪，可以开始框选 ROI。");
+        updateSnapshot();
+        setStatus("地图已就绪，可直接运行当前场景。");
       } catch (bootstrapError) {
         if (!cancelled) {
           setError(bootstrapError.message);
@@ -185,10 +303,38 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      listenersRef.current.forEach((listener) => listener?.remove?.());
+      listenersRef.current = [];
+      resultMarkersRef.current.forEach((marker) => marker.setMap(null));
+      resultMarkersRef.current = [];
+      referenceMarkersRef.current.forEach((marker) => marker.setMap(null));
+      referenceMarkersRef.current = [];
+      polygonRef.current?.setMap?.(null);
       mapRef.current = null;
       mapsRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (!previewVisible) {
+      setAnalysisPolygonPoints([]);
+      return;
+    }
+
+    if (selectedScenarioId === "embedding_intro") {
+      setAnalysisPolygonPoints(buildViewportInsetPolygon(mapSnapshot?.bounds));
+      return;
+    }
+
+    if (similarityMode) {
+      setAnalysisPolygonPoints(
+        buildSquarePolygon(mapSnapshot?.center, Number(params.searchSizeKm))
+      );
+      return;
+    }
+
+    setAnalysisPolygonPoints([]);
+  }, [mapSnapshot, params.searchSizeKm, previewVisible, selectedScenarioId, similarityMode]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -197,74 +343,65 @@ export default function App() {
       return;
     }
 
-    if (!tempLineRef.current) {
-      tempLineRef.current = new mapClasses.Polyline({
-        map,
-        path: [],
-        strokeColor: "#2563eb",
-        strokeOpacity: 1,
-        strokeWeight: 2
-      });
-    }
-
     if (!polygonRef.current) {
       polygonRef.current = new mapClasses.Polygon({
         map,
         paths: [],
         strokeColor: "#0f766e",
-        strokeOpacity: 0.9,
+        strokeOpacity: 0.95,
         strokeWeight: 2,
         fillColor: "#2dd4bf",
-        fillOpacity: 0.18,
-        editable: false
+        fillOpacity: 0.1,
+        editable: false,
+        clickable: false
       });
     }
 
-    markersRef.current.forEach((marker) => marker.setMap(null));
-    markersRef.current = roiPoints.map(
-      (point, index) =>
-        new mapClasses.Marker({
-          map,
-          position: point,
-          title: `顶点 ${index + 1}`,
-          label: {
-            text: String(index + 1),
-            color: "#ffffff",
-            fontSize: "11px",
-            fontWeight: "700"
-          },
-          icon: {
-            path: google.maps.SymbolPath.CIRCLE,
-            fillColor: "#2563eb",
-            fillOpacity: 1,
-            strokeColor: "#ffffff",
-            strokeWeight: 2,
-            scale: 8
-          }
-        })
-    );
-
-    if (!roiClosed) {
-      tempLineRef.current.setPath(roiPoints);
+    if (analysisPolygonPoints.length < 3) {
       polygonRef.current.setPaths([]);
-      polygonRef.current.setEditable(false);
-      polygonListenersRef.current.forEach((listener) => listener.remove());
-      polygonListenersRef.current = [];
       return;
     }
 
-    tempLineRef.current.setPath([]);
-    polygonRef.current.setPaths(roiPoints);
-    polygonRef.current.setEditable(true);
+    polygonRef.current.setPaths(analysisPolygonPoints);
+  }, [analysisPolygonPoints]);
 
-    const path = polygonRef.current.getPath();
-    polygonListenersRef.current.forEach((listener) => listener.remove());
-    polygonListenersRef.current = [
-      path.addListener("set_at", () => setRoiPoints(readPath(path))),
-      path.addListener("insert_at", () => setRoiPoints(readPath(path))),
-      path.addListener("remove_at", () => setRoiPoints(readPath(path)))
-    ];
-  }, [roiPoints, roiClosed]);
+  useEffect(() => {
+    const map = mapRef.current;
+    const mapClasses = mapsRef.current;
+    if (!map || !mapClasses) {
+      return;
+    }
+
+    referenceMarkersRef.current.forEach((marker) => marker.setMap(null));
+    referenceMarkersRef.current = [];
+
+    if (referencePoints.length === 0 || !similarityMode) {
+      return;
+    }
+
+    referenceMarkersRef.current = referencePoints.map((point, index) => {
+      const isMultiClick = selectedScenarioId === "click_query";
+      return new mapClasses.Marker({
+        map,
+        position: point,
+        title: "Reference Point",
+        label: {
+          text: isMultiClick ? String(index + 1) : "R",
+          color: "#ffffff",
+          fontSize: "12px",
+          fontWeight: "700"
+        },
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          fillColor: "#dc2626",
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 2,
+          scale: 10
+        }
+      });
+    });
+  }, [referencePoints, selectedScenarioId, similarityMode]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -278,92 +415,150 @@ export default function App() {
       overlays.removeAt(0);
     }
 
-    try {
-      layers
-        .filter(
-          (layer) =>
-            layer.visible &&
-            layer.layer_type === "raster_tile" &&
-            typeof layer.tile_url === "string" &&
-            layer.tile_url.length > 0
-        )
-        .forEach((layer) => {
-          const mapType = {
-            name: layer.name,
-            tileSize: new mapClasses.Size(256, 256),
-            getTile(coord, zoom, ownerDocument) {
-              const image = ownerDocument.createElement("img");
-              image.src = layer.tile_url
-                .replace("{x}", String(coord.x))
-                .replace("{y}", String(coord.y))
-                .replace("{z}", String(zoom));
-              image.alt = layer.name;
-              image.draggable = false;
-              image.style.width = "256px";
-              image.style.height = "256px";
-              image.style.display = "block";
-              image.style.opacity = String(layer.opacity ?? 1);
-              image.style.pointerEvents = "none";
-              return image;
-            },
-            releaseTile(tile) {
-              if (tile?.remove) {
-                tile.remove();
-              }
+    layers
+      .filter(
+        (layer) =>
+          layer.visible &&
+          layer.layer_type === "raster_tile" &&
+          typeof layer.tile_url === "string" &&
+          layer.tile_url.length > 0
+      )
+      .forEach((layer) => {
+        const mapType = {
+          name: layer.name,
+          tileSize: new mapClasses.Size(256, 256),
+          getTile(coord, zoom, ownerDocument) {
+            const image = ownerDocument.createElement("img");
+            image.src = layer.tile_url
+              .replace("{x}", String(coord.x))
+              .replace("{y}", String(coord.y))
+              .replace("{z}", String(zoom));
+            image.alt = layer.name;
+            image.draggable = false;
+            image.style.width = "256px";
+            image.style.height = "256px";
+            image.style.display = "block";
+            image.style.opacity = String(layer.opacity ?? 1);
+            image.style.pointerEvents = "none";
+            return image;
+          },
+          releaseTile(tile) {
+            if (tile?.remove) {
+              tile.remove();
             }
-          };
-          overlays.insertAt(overlays.getLength(), mapType);
-        });
-    } catch (overlayError) {
-      setError(
-        overlayError instanceof Error
-          ? `图层叠加失败: ${overlayError.message}`
-          : "图层叠加失败。"
-      );
-    }
+          }
+        };
+        overlays.insertAt(overlays.getLength(), mapType);
+      });
   }, [layers]);
 
-  function startDrawing() {
-    setError("");
-    setStatus("绘制模式已开启，点击地图添加多边形顶点。");
-    setLayers([]);
-    setSummaries({});
-    setArtifacts({});
-    setRoiPoints([]);
-    setRoiClosed(false);
-    setIsDrawing(true);
-  }
-
-  function finishPolygon() {
-    if (roiPoints.length < 3) {
-      setError("至少需要 3 个顶点才能闭合多边形。");
-      return;
-    }
-
-    setError("");
-    setIsDrawing(false);
-    setRoiClosed(true);
-    setStatus("ROI 已闭合，可直接运行分析，也可拖动顶点微调。");
-
+  useEffect(() => {
+    const map = mapRef.current;
     const mapClasses = mapsRef.current;
-    if (!mapClasses) {
+    if (!map || !mapClasses) {
       return;
     }
 
-    const bounds = new mapClasses.LatLngBounds();
-    roiPoints.forEach((point) => bounds.extend(point));
-    mapRef.current?.fitBounds(bounds);
-  }
+    resultMarkersRef.current.forEach((marker) => marker.setMap(null));
+    resultMarkersRef.current = [];
 
-  function clearRoi() {
-    setRoiPoints([]);
-    setRoiClosed(false);
-    setIsDrawing(false);
+    const infoWindow = infoWindowRef.current;
+    infoWindow?.close();
+
+    layers
+      .filter(
+        (layer) =>
+          layer.visible &&
+          layer.layer_type === "point_collection" &&
+          layer.geojson?.type === "FeatureCollection"
+      )
+      .forEach((layer) => {
+        const features = Array.isArray(layer.geojson.features)
+          ? layer.geojson.features
+          : [];
+
+        features.forEach((feature) => {
+          if (feature?.geometry?.type !== "Point") {
+            return;
+          }
+
+          const [lng, lat] = feature.geometry.coordinates || [];
+          if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+            return;
+          }
+
+          const rank = feature.properties?.rank;
+          const score = feature.properties?.score;
+          const marker = new mapClasses.Marker({
+            map,
+            position: { lat, lng },
+            title: layer.name,
+            label: rank
+              ? {
+                  text: String(rank),
+                  color: "#ffffff",
+                  fontSize: "12px",
+                  fontWeight: "700"
+                }
+              : undefined,
+            icon: {
+              path: google.maps.SymbolPath.CIRCLE,
+              fillColor: "#2563eb",
+              fillOpacity: 1,
+              strokeColor: "#ffffff",
+              strokeWeight: 2,
+              scale: 11
+            }
+          });
+
+          marker.addListener("click", () => {
+            infoWindow?.setContent(
+              `<div class="mapInfoWindow"><strong>${layer.name}</strong><br/>Rank: ${rank ?? "-"}<br/>Score: ${score ?? "-"}</div>`
+            );
+            infoWindow?.open({
+              map,
+              anchor: marker
+            });
+          });
+
+          resultMarkersRef.current.push(marker);
+        });
+      });
+  }, [layers]);
+
+  useEffect(() => {
     setLayers([]);
     setSummaries({});
     setArtifacts({});
     setError("");
-    setStatus("ROI 已清空。");
+    setReferencePoints([]);
+    setUploadedTifMeta(null);
+    setPreviewVisible(true);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    setStatus(getScenarioHint(selectedScenarioId));
+  }, [selectedScenarioId]);
+
+  function clearScene() {
+    setLayers([]);
+    setSummaries({});
+    setArtifacts({});
+    setReferencePoints([]);
+    setUploadedTifMeta(null);
+    setError("");
+    setPreviewVisible(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    setStatus("已清空当前场景结果。");
+  }
+
+  function clearClickReferencePoints() {
+    setReferencePoints([]);
+    setError("");
+    setStatus("已清空点击参考点。");
+    setPreviewVisible(true);
   }
 
   function handleParamChange(event) {
@@ -373,12 +568,58 @@ export default function App() {
       [name]:
         type === "checkbox"
           ? checked
-          : ["year", "clusterCount", "sampleCount", "scale", "seed"].includes(name)
+          : [
+                "year",
+                "clusterCount",
+                "sampleCount",
+                "scale",
+                "seed",
+                "searchSizeKm",
+                "topK"
+              ].includes(name)
             ? Number(value)
-            : ["rgbMin", "rgbMax"].includes(name)
+            : ["rgbMin", "rgbMax", "candidateThreshold"].includes(name)
               ? Number(value)
               : value
     }));
+    setPreviewVisible(true);
+  }
+
+  async function handleTifUpload(event) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      setUploadedTifMeta(null);
+      setReferencePoints([]);
+      return;
+    }
+
+    setIsParsingTif(true);
+    setError("");
+    setStatus("正在解析 GeoTIFF 中心点...");
+
+    try {
+      const center = await parseGeoTiffCenter(file);
+      const point = {
+        lat: center.lat,
+        lng: center.lng
+      };
+
+      setReferencePoints([point]);
+      setUploadedTifMeta({
+        fileName: file.name,
+        sourceCrs: center.sourceCrs,
+        point
+      });
+      setPreviewVisible(true);
+      setStatus("GeoTIFF 解析完成，可运行图片检索。");
+    } catch (parseError) {
+      setUploadedTifMeta(null);
+      setReferencePoints([]);
+      setError(parseError.message);
+      setStatus("GeoTIFF 解析失败。");
+    } finally {
+      setIsParsingTif(false);
+    }
   }
 
   async function runCurrentScenario() {
@@ -387,23 +628,12 @@ export default function App() {
     );
 
     if (!selectedScenario) {
-      setError("场景配置还没有加载完成。");
+      setError("场景配置尚未加载完成。");
       return;
     }
 
     if (selectedScenario.status !== "ready") {
-      setError("当前场景是预留占位，还没有实现。");
-      return;
-    }
-
-    if (!roiClosed || roiPoints.length < 3) {
-      setError("请先完成 ROI 多边形绘制。");
-      return;
-    }
-
-    const geometry = buildGeoJsonPolygon(roiPoints);
-    if (!geometry) {
-      setError("ROI 几何无效。");
+      setError("当前场景尚未实现。");
       return;
     }
 
@@ -412,18 +642,59 @@ export default function App() {
     setStatus("正在请求 Earth Engine 分析...");
 
     try {
-      const payload = {
-        geometry,
-        year: params.year,
-        rgb_bands: [params.bandR, params.bandG, params.bandB],
-        rgb_min: params.rgbMin,
-        rgb_max: params.rgbMax,
-        cluster_count: params.clusterCount,
-        sample_count: params.sampleCount,
-        scale: params.scale,
-        seed: params.seed,
-        include_vector_probe: params.includeVectorProbe
-      };
+      let payload;
+
+      if (selectedScenarioId === "embedding_intro") {
+        const geometryPoints = buildViewportInsetPolygon(mapSnapshot?.bounds);
+        if (geometryPoints.length < 3) {
+          throw new Error("当前地图范围尚未稳定，无法生成分析区域。");
+        }
+
+        const geometry = buildGeoJsonPolygon(geometryPoints);
+        if (!geometry) {
+          throw new Error("ROI 几何无效。");
+        }
+
+        payload = {
+          geometry,
+          year: params.year,
+          rgb_bands: [params.bandR, params.bandG, params.bandB],
+          rgb_min: params.rgbMin,
+          rgb_max: params.rgbMax,
+          cluster_count: params.clusterCount,
+          sample_count: params.sampleCount,
+          scale: params.scale,
+          seed: params.seed,
+          include_vector_probe: params.includeVectorProbe
+        };
+      } else {
+        if (referencePoints.length === 0) {
+          throw new Error("请先设置参考点。");
+        }
+
+        if (!mapSnapshot?.center) {
+          throw new Error("当前地图中心尚未稳定，无法生成搜索区域。");
+        }
+
+        payload = {
+          ...(selectedScenarioId === "click_query"
+            ? {
+                reference_points: referencePoints.map((point) => [
+                  point.lng,
+                  point.lat
+                ])
+              }
+            : {
+                reference_point: [referencePoints[0].lng, referencePoints[0].lat]
+              }),
+          search_center: [mapSnapshot.center.lng, mapSnapshot.center.lat],
+          search_size_km: params.searchSizeKm,
+          top_k: params.topK,
+          year: params.year,
+          scale: params.scale,
+          candidate_threshold: params.candidateThreshold
+        };
+      }
 
       const response = await runScenario(selectedScenarioId, payload);
       setLayers(
@@ -437,7 +708,8 @@ export default function App() {
       );
       setSummaries(response.summaries || {});
       setArtifacts(response.artifacts || {});
-      setStatus("分析完成，图层已叠加到地图上。");
+      setPreviewVisible(true);
+      setStatus("分析完成，结果已叠加到地图上。");
     } catch (runError) {
       setError(runError.message);
       setStatus("分析失败。");
@@ -465,15 +737,18 @@ export default function App() {
   const selectedScenario = scenarios.find(
     (scenario) => scenario.scenario_id === selectedScenarioId
   );
+  const runDisabled =
+    !mapReady ||
+    isRunning ||
+    isParsingTif ||
+    (similarityMode && referencePoints.length === 0);
 
   return (
     <div className="appShell">
       <aside className="leftPanel">
         <p className="eyebrow">Geo Intelligence Platform</p>
         <h1>地图智能分析平台</h1>
-        <p className="intro">
-          这是一个基于地理位置嵌入的地图智能分析平台。
-        </p>
+        <p className="intro">{getScenarioHint(selectedScenarioId)}</p>
 
         <label className="field">
           <span>场景</span>
@@ -499,160 +774,262 @@ export default function App() {
         </div>
 
         <div className="controlRow">
-          <button className="primaryBtn" onClick={startDrawing} type="button">
-            开始绘制
+          <button className="ghostBtn" onClick={clearScene} type="button">
+            清空结果
           </button>
-          <button
-            className={isDrawing && !roiClosed ? "successBtn" : "ghostBtn"}
-            onClick={finishPolygon}
-            type="button"
-          >
-            完成闭合
-          </button>
-          <button className="ghostBtn" onClick={clearRoi} type="button">
-            清空 ROI
-          </button>
+          {selectedScenarioId === "click_query" ? (
+            <button
+              className="ghostBtn"
+              onClick={clearClickReferencePoints}
+              type="button"
+            >
+              清空选点
+            </button>
+          ) : null}
         </div>
 
-        <div className="fieldGrid">
-          <label className="field">
-            <span>年份</span>
-            <input
-              name="year"
-              type="number"
-              min="2017"
-              value={params.year}
-              onChange={handleParamChange}
-            />
-          </label>
+        {selectedScenarioId === "image_retrieval" ? (
+          <div className="scenarioBox">
+            <label className="field">
+              <span>GeoTIFF 文件</span>
+              <input
+                ref={fileInputRef}
+                accept=".tif,.tiff"
+                type="file"
+                onChange={handleTifUpload}
+              />
+            </label>
+            <div className="metaBlock">
+              <div>
+                <span className="metaLabel">文件</span>
+                <strong>{uploadedTifMeta?.fileName || "-"}</strong>
+              </div>
+              <div>
+                <span className="metaLabel">源坐标系</span>
+                <strong>{uploadedTifMeta?.sourceCrs || "-"}</strong>
+              </div>
+              <div>
+                <span className="metaLabel">中心点</span>
+                <strong>{formatCoordinate(uploadedTifMeta?.point)}</strong>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
-          <label className="field">
-            <span>RGB Band R</span>
-            <select
-              className="select"
-              name="bandR"
-              value={params.bandR}
-              onChange={handleParamChange}
-            >
-              {BAND_OPTIONS.map((band) => (
-                <option key={band} value={band}>
-                  {band}
-                </option>
-              ))}
-            </select>
-          </label>
+        {selectedScenarioId === "click_query" ? (
+          <div className="scenarioBox">
+            <div className="metaBlock">
+              <div>
+                <span className="metaLabel">已选点数</span>
+                <strong>{referencePoints.length}</strong>
+              </div>
+              <div>
+                <span className="metaLabel">最新参考点</span>
+                <strong>{formatCoordinate(latestReferencePoint)}</strong>
+              </div>
+              <div>
+                <span className="metaLabel">搜索中心</span>
+                <strong>{formatCoordinate(mapSnapshot?.center)}</strong>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
-          <label className="field">
-            <span>RGB Band G</span>
-            <select
-              className="select"
-              name="bandG"
-              value={params.bandG}
-              onChange={handleParamChange}
-            >
-              {BAND_OPTIONS.map((band) => (
-                <option key={band} value={band}>
-                  {band}
-                </option>
-              ))}
-            </select>
-          </label>
+        <details className="paramsPanel" open>
+          <summary className="paramsSummary">参数设置</summary>
+          <div className="fieldGrid">
+            <label className="field">
+              <span>年份</span>
+              <input
+                name="year"
+                type="number"
+                min="2017"
+                value={params.year}
+                onChange={handleParamChange}
+              />
+            </label>
 
-          <label className="field">
-            <span>RGB Band B</span>
-            <select
-              className="select"
-              name="bandB"
-              value={params.bandB}
-              onChange={handleParamChange}
-            >
-              {BAND_OPTIONS.map((band) => (
-                <option key={band} value={band}>
-                  {band}
-                </option>
-              ))}
-            </select>
-          </label>
+            {similarityMode ? (
+              <>
+                <label className="field">
+                  <span>搜索边长 km</span>
+                  <input
+                    name="searchSizeKm"
+                    type="number"
+                    min="1"
+                    value={params.searchSizeKm}
+                    onChange={handleParamChange}
+                  />
+                </label>
 
-          <label className="field">
-            <span>RGB Min</span>
-            <input
-              name="rgbMin"
-              type="number"
-              step="0.1"
-              value={params.rgbMin}
-              onChange={handleParamChange}
-            />
-          </label>
+                <label className="field">
+                  <span>结果数量</span>
+                  <input
+                    name="topK"
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={params.topK}
+                    onChange={handleParamChange}
+                  />
+                </label>
 
-          <label className="field">
-            <span>RGB Max</span>
-            <input
-              name="rgbMax"
-              type="number"
-              step="0.1"
-              value={params.rgbMax}
-              onChange={handleParamChange}
-            />
-          </label>
+                <label className="field">
+                  <span>Scale</span>
+                  <input
+                    name="scale"
+                    type="number"
+                    min="1"
+                    value={params.scale}
+                    onChange={handleParamChange}
+                  />
+                </label>
 
-          <label className="field">
-            <span>聚类数</span>
-            <input
-              name="clusterCount"
-              type="number"
-              min="2"
-              value={params.clusterCount}
-              onChange={handleParamChange}
-            />
-          </label>
+                <label className="field">
+                  <span>候选阈值</span>
+                  <input
+                    name="candidateThreshold"
+                    type="number"
+                    step="0.01"
+                    min="-1"
+                    max="1"
+                    value={params.candidateThreshold}
+                    onChange={handleParamChange}
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <label className="field">
+                  <span>RGB Band R</span>
+                  <select
+                    className="select"
+                    name="bandR"
+                    value={params.bandR}
+                    onChange={handleParamChange}
+                  >
+                    {BAND_OPTIONS.map((band) => (
+                      <option key={band} value={band}>
+                        {band}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-          <label className="field">
-            <span>采样数</span>
-            <input
-              name="sampleCount"
-              type="number"
-              min="10"
-              value={params.sampleCount}
-              onChange={handleParamChange}
-            />
-          </label>
+                <label className="field">
+                  <span>RGB Band G</span>
+                  <select
+                    className="select"
+                    name="bandG"
+                    value={params.bandG}
+                    onChange={handleParamChange}
+                  >
+                    {BAND_OPTIONS.map((band) => (
+                      <option key={band} value={band}>
+                        {band}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-          <label className="field">
-            <span>Scale</span>
-            <input
-              name="scale"
-              type="number"
-              min="1"
-              value={params.scale}
-              onChange={handleParamChange}
-            />
-          </label>
+                <label className="field">
+                  <span>RGB Band B</span>
+                  <select
+                    className="select"
+                    name="bandB"
+                    value={params.bandB}
+                    onChange={handleParamChange}
+                  >
+                    {BAND_OPTIONS.map((band) => (
+                      <option key={band} value={band}>
+                        {band}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-          <label className="field">
-            <span>Seed</span>
-            <input
-              name="seed"
-              type="number"
-              value={params.seed}
-              onChange={handleParamChange}
-            />
-          </label>
+                <label className="field">
+                  <span>RGB Min</span>
+                  <input
+                    name="rgbMin"
+                    type="number"
+                    step="0.1"
+                    value={params.rgbMin}
+                    onChange={handleParamChange}
+                  />
+                </label>
 
-          <label className="checkboxRow">
-            <input
-              checked={params.includeVectorProbe}
-              name="includeVectorProbe"
-              onChange={handleParamChange}
-              type="checkbox"
-            />
-            <span>返回 ROI 质心 embedding 调试向量</span>
-          </label>
-        </div>
+                <label className="field">
+                  <span>RGB Max</span>
+                  <input
+                    name="rgbMax"
+                    type="number"
+                    step="0.1"
+                    value={params.rgbMax}
+                    onChange={handleParamChange}
+                  />
+                </label>
+
+                <label className="field">
+                  <span>聚类数</span>
+                  <input
+                    name="clusterCount"
+                    type="number"
+                    min="2"
+                    value={params.clusterCount}
+                    onChange={handleParamChange}
+                  />
+                </label>
+
+                <label className="field">
+                  <span>采样数</span>
+                  <input
+                    name="sampleCount"
+                    type="number"
+                    min="10"
+                    value={params.sampleCount}
+                    onChange={handleParamChange}
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Scale</span>
+                  <input
+                    name="scale"
+                    type="number"
+                    min="1"
+                    value={params.scale}
+                    onChange={handleParamChange}
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Seed</span>
+                  <input
+                    name="seed"
+                    type="number"
+                    value={params.seed}
+                    onChange={handleParamChange}
+                  />
+                </label>
+
+                <label className="checkboxRow">
+                  <input
+                    checked={params.includeVectorProbe}
+                    name="includeVectorProbe"
+                    onChange={handleParamChange}
+                    type="checkbox"
+                  />
+                  <span>返回 ROI 质心 embedding 调试向量</span>
+                </label>
+              </>
+            )}
+          </div>
+        </details>
 
         <button
           className="runBtn"
-          disabled={!mapReady || isRunning}
+          disabled={runDisabled}
           onClick={runCurrentScenario}
           type="button"
         >

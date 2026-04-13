@@ -27,8 +27,8 @@ class EmbeddingIntroScenario(Scenario):
     def descriptor(self) -> ScenarioDescriptor:
         return ScenarioDescriptor(
             scenario_id=self.scenario_id,
-            name="卫星嵌入可视化",
-            description="对多边形 ROI 生成卫星嵌入 RGB 图层和 KMeans 聚类图层。",
+            name="Embedding Visualization",
+            description="Build embedding RGB and KMeans cluster layers for an inset ROI from the current viewport.",
             status="ready",
             supported_inputs=[
                 "geometry",

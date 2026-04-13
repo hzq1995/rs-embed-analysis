@@ -4,16 +4,16 @@ from typing import Dict, List
 
 from backend.app.scenarios.base import Scenario
 from backend.app.scenarios.embedding_intro import EmbeddingIntroScenario
-from backend.app.scenarios.mask_segmentation import MaskSegmentationScenario
-from backend.app.scenarios.retrieval_compare import RetrievalCompareScenario
+from backend.app.scenarios.mask_segmentation import ImageRetrievalScenario
+from backend.app.scenarios.retrieval_compare import ClickQueryScenario
 
 
 class ScenarioRegistry:
     def __init__(self) -> None:
         scenarios: List[Scenario] = [
             EmbeddingIntroScenario(),
-            MaskSegmentationScenario(),
-            RetrievalCompareScenario(),
+            ImageRetrievalScenario(),
+            ClickQueryScenario(),
         ]
         self._scenarios: Dict[str, Scenario] = {
             scenario.scenario_id: scenario
