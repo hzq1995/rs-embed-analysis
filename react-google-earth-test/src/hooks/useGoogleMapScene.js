@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { resolveApiUrl } from "../api";
 import { loadGoogleMaps } from "../googleMaps";
 import { extractMapSnapshot, extractPointFeatures } from "../mapUtils";
 import { MAPS_API_KEY } from "../scenarioConfig";
@@ -20,7 +21,6 @@ export function useGoogleMapScene({
   onMapReady,
   onReferencePointAdd,
   referencePoints,
-  scenarioPoints,
   selectedScenarioId,
   similarityMode
 }) {
@@ -30,7 +30,7 @@ export function useGoogleMapScene({
   const listenersRef = useRef([]);
   const referenceMarkersRef = useRef([]);
   const resultMarkersRef = useRef([]);
-  const scenarioMarkersRef = useRef([]);
+  const imageOverlaysRef = useRef([]);
   const infoWindowRef = useRef(null);
   const pendingAutoFitRef = useRef(false);
   const selectedScenarioIdRef = useRef(selectedScenarioId);
@@ -72,6 +72,7 @@ export function useGoogleMapScene({
           maps,
           Map: mapsLib.Map,
           Marker: google.maps.Marker,
+          GroundOverlay: google.maps.GroundOverlay,
           InfoWindow: google.maps.InfoWindow,
           Size: google.maps.Size
         };
@@ -128,10 +129,10 @@ export function useGoogleMapScene({
       cancelled = true;
       listenersRef.current.forEach((listener) => listener?.remove?.());
       listenersRef.current = [];
+      imageOverlaysRef.current.forEach((overlay) => overlay?.setMap?.(null));
+      imageOverlaysRef.current = [];
       resultMarkersRef.current.forEach((marker) => marker.setMap(null));
       resultMarkersRef.current = [];
-      scenarioMarkersRef.current.forEach((marker) => marker.setMap(null));
-      scenarioMarkersRef.current = [];
       referenceMarkersRef.current.forEach((marker) => marker.setMap(null));
       referenceMarkersRef.current = [];
       mapRef.current = null;
@@ -233,48 +234,38 @@ export function useGoogleMapScene({
       return;
     }
 
-    scenarioMarkersRef.current.forEach((marker) => marker.setMap(null));
-    scenarioMarkersRef.current = [];
+    imageOverlaysRef.current.forEach((overlay) => overlay.setMap(null));
+    imageOverlaysRef.current = [];
 
-    if (selectedScenarioId !== "spartina_change_detection" || scenarioPoints.length === 0) {
-      return;
-    }
-
-    const infoWindow = infoWindowRef.current;
-    scenarioMarkersRef.current = scenarioPoints.map((point) => {
-      const marker = new mapClasses.Marker({
-        map,
-        position: { lat: point.lat, lng: point.lng },
-        title: `互花米草样点 ${point.index}`,
-        label: {
-          text: String(point.index),
-          color: "#0b1220",
-          fontSize: "11px",
-          fontWeight: "700"
-        },
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          fillColor: "#facc15",
-          fillOpacity: 1,
-          strokeColor: "#0f172a",
-          strokeWeight: 2,
-          scale: 8
-        }
-      });
-
-      marker.addListener("click", () => {
-        infoWindow?.setContent(
-          `<div class="mapInfoWindow"><strong>互花米草样点 ${point.index}</strong><br/>Lat: ${point.lat.toFixed(6)}<br/>Lng: ${point.lng.toFixed(6)}</div>`
+    layers
+      .filter(
+        (layer) =>
+          layer.visible &&
+          layer.layer_type === "image_overlay" &&
+          typeof layer.image_url === "string" &&
+          layer.image_url.length > 0 &&
+          isValidBounds(layer.bounds)
+      )
+      .forEach((layer) => {
+        const [southWest, northEast] = layer.bounds;
+        const overlay = new mapClasses.GroundOverlay(
+          resolveApiUrl(layer.image_url),
+          {
+            north: northEast[0],
+            south: southWest[0],
+            east: northEast[1],
+            west: southWest[1]
+          }
         );
-        infoWindow?.open({
-          map,
-          anchor: marker
-        });
-      });
 
-      return marker;
-    });
-  }, [scenarioPoints, selectedScenarioId]);
+        if (typeof overlay.setOpacity === "function") {
+          overlay.setOpacity(layer.opacity ?? 1);
+        }
+
+        overlay.setMap(map);
+        imageOverlaysRef.current.push(overlay);
+      });
+  }, [layers]);
 
   useEffect(() => {
     const map = mapRef.current;

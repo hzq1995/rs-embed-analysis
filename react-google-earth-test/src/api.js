@@ -28,6 +28,18 @@ export function getApiBaseUrl() {
   return API_BASE_URL;
 }
 
+export function resolveApiUrl(path) {
+  if (!path) {
+    return path;
+  }
+
+  if (/^https?:\/\//.test(path)) {
+    return path;
+  }
+
+  return `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 export function fetchHealth() {
   return request("/api/health");
 }

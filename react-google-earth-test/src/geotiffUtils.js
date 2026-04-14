@@ -203,10 +203,161 @@ function buildCenterFirstSamplePoints(bbox, sampleCount, maxSpacingMeters, proje
     .map((candidate) => candidate.point);
 }
 
-export async function parseGeoTiffSamplePoints(file, sampleCount, maxSpacingMeters) {
-  const buffer = await file.arrayBuffer();
+function clampByte(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function computeRasterStats(samples) {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+
+  for (let index = 0; index < samples.length; index += 1) {
+    const value = samples[index];
+    if (!Number.isFinite(value)) {
+      continue;
+    }
+
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    throw new Error("GeoTIFF 预览数据为空。");
+  }
+
+  return { min, max };
+}
+
+function normalizeSample(value, min, max) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  if (max <= min) {
+    return 255;
+  }
+
+  return clampByte(((value - min) / (max - min)) * 255);
+}
+
+function buildGrayRgba(samples) {
+  const { min, max } = computeRasterStats(samples);
+  const rgbaData = new Uint8ClampedArray(samples.length * 4);
+
+  for (let index = 0; index < samples.length; index += 1) {
+    const normalizedValue = normalizeSample(samples[index], min, max);
+    const rgbaIndex = index * 4;
+    rgbaData[rgbaIndex] = normalizedValue;
+    rgbaData[rgbaIndex + 1] = normalizedValue;
+    rgbaData[rgbaIndex + 2] = normalizedValue;
+    rgbaData[rgbaIndex + 3] = 255;
+  }
+
+  return {
+    rgbaData,
+    stats: { min, max }
+  };
+}
+
+function buildRgbRgba(rasters) {
+  const channels = rasters.slice(0, 3).map((channel) => {
+    const stats = computeRasterStats(channel);
+    return { channel, stats };
+  });
+  const pixelCount = channels[0].channel.length;
+  const rgbaData = new Uint8ClampedArray(pixelCount * 4);
+
+  for (let index = 0; index < pixelCount; index += 1) {
+    const rgbaIndex = index * 4;
+    rgbaData[rgbaIndex] = normalizeSample(
+      channels[0].channel[index],
+      channels[0].stats.min,
+      channels[0].stats.max
+    );
+    rgbaData[rgbaIndex + 1] = normalizeSample(
+      channels[1].channel[index],
+      channels[1].stats.min,
+      channels[1].stats.max
+    );
+    rgbaData[rgbaIndex + 2] = normalizeSample(
+      channels[2].channel[index],
+      channels[2].stats.min,
+      channels[2].stats.max
+    );
+    rgbaData[rgbaIndex + 3] = 255;
+  }
+
+  return {
+    rgbaData,
+    stats: {
+      min: channels.map(({ stats }) => stats.min),
+      max: channels.map(({ stats }) => stats.max)
+    }
+  };
+}
+
+async function loadGeoTiffImage(source) {
+  const buffer =
+    typeof source === "string"
+      ? await fetch(source).then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`无法加载 GeoTIFF: ${response.status} ${response.statusText}`);
+          }
+
+          return response.arrayBuffer();
+        })
+      : await source.arrayBuffer();
+
   const tiff = await fromArrayBuffer(buffer);
-  const image = await tiff.getImage();
+  return tiff.getImage();
+}
+
+export async function loadGeoTiffPreview(source) {
+  const image = await loadGeoTiffImage(source);
+  const width = image.getWidth();
+  const height = image.getHeight();
+  const samplesPerPixel = image.getSamplesPerPixel();
+
+  if (!width || !height) {
+    throw new Error("GeoTIFF 缺少可用的图像尺寸。");
+  }
+
+  const rasters = await image.readRasters({ interleave: false });
+  if (!Array.isArray(rasters) || rasters.length === 0) {
+    throw new Error("GeoTIFF 未返回可显示的像素数据。");
+  }
+
+  if (samplesPerPixel === 1 || rasters.length === 1) {
+    const { rgbaData, stats } = buildGrayRgba(rasters[0]);
+    return {
+      width,
+      height,
+      rgbaData,
+      renderMode: "grayscale",
+      stats
+    };
+  }
+
+  if (samplesPerPixel >= 3 || rasters.length >= 3) {
+    const { rgbaData, stats } = buildRgbRgba(rasters);
+    return {
+      width,
+      height,
+      rgbaData,
+      renderMode: "rgb",
+      stats
+    };
+  }
+
+  throw new Error(`暂不支持 ${samplesPerPixel} 波段 GeoTIFF 预览。`);
+}
+
+export async function parseGeoTiffSamplePoints(file, sampleCount, maxSpacingMeters) {
+  const image = await loadGeoTiffImage(file);
   const geoKeys = image.getGeoKeys() || {};
   const bbox = image.getBoundingBox();
 

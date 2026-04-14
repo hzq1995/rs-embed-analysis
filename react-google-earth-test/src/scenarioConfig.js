@@ -6,7 +6,9 @@ export const BAND_OPTIONS = Array.from({ length: 64 }, (_, index) =>
 );
 export const SIMILARITY_SCENARIOS = new Set(["image_retrieval", "click_query"]);
 export const SPARTINA_PREVIEW_IMAGE = "/scenarios/spartina/互花米草-v3.png";
-export const SPARTINA_POINTS_CSV = "/scenarios/spartina/互花米草坐标.csv";
+export const SPARTINA_BASE_TIF_PATH = "/scenarios/spartina/spartina_v1.tif";
+export const SPARTINA_MASK_PREVIEW_PATH =
+  "/api/scenarios/spartina_change_detection/mask-preview";
 
 export const defaultParams = {
   year: 2024,

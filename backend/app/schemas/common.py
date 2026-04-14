@@ -62,9 +62,16 @@ class GeoJsonPolygon(AppBaseModel):
 
 class LayerModel(AppBaseModel):
     layer_id: str
-    layer_type: Literal["raster_tile", "vector_geojson", "point_collection", "summary_only"]
+    layer_type: Literal[
+        "raster_tile",
+        "image_overlay",
+        "vector_geojson",
+        "point_collection",
+        "summary_only",
+    ]
     name: str
     tile_url: Optional[str] = None
+    image_url: Optional[str] = None
     geojson: Optional[Dict[str, Any]] = None
     legend: Optional[Dict[str, Any]] = None
     opacity: float = Field(default=1.0, ge=0.0, le=1.0)
@@ -141,17 +148,7 @@ class EmbeddingIntroRequest(AppBaseModel):
 
 
 class SpartinaChangeRequest(AppBaseModel):
-    rgb_bands: List[BandName] = Field(default_factory=lambda: ["A01", "A16", "A09"])
-    rgb_min: float = -0.3
-    rgb_max: float = 0.3
-    scale: float = Field(default=10, gt=0)
-
-    @field_validator("rgb_bands")
-    @classmethod
-    def validate_band_count(cls, rgb_bands: List[str]) -> List[str]:
-        if len(rgb_bands) != 3:
-            raise ValueError("rgb_bands must include exactly 3 bands.")
-        return rgb_bands
+    pass
 
 
 class SimilaritySearchRequest(AppBaseModel):

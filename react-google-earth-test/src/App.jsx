@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { fetchScenarios, runScenario } from "./api";
 import LeftPanel from "./components/LeftPanel";
 import RightPanel from "./components/RightPanel";
+import SpartinaTifOverlay from "./components/SpartinaTifOverlay";
 import { parseGeoTiffSamplePoints } from "./geotiffUtils";
 import { useGoogleMapScene } from "./hooks/useGoogleMapScene";
 import { buildGeoJsonPolygon, buildViewportInsetPolygon } from "./mapUtils";
-import { loadSpartinaPoints } from "./spartinaUtils";
 import {
   defaultParams,
   isSimilarityScenario,
@@ -14,6 +14,14 @@ import {
 
 const PARAMS_STORAGE_KEY = "rs_embed_params";
 const SCENARIO_VIEW_STORAGE_KEY = "rs_embed_scenario_views";
+const HIDDEN_SCENARIO_IDS = new Set(["image_retrieval"]);
+const SPARTINA_EXTRACTION_DELAY_MS = 1000;
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+}
 
 function loadStoredParams() {
   try {
@@ -66,7 +74,7 @@ function getLayerDefaults(scenarioId, layer) {
 
 function getScenarioStatusText(scenarioId) {
   if (scenarioId === SPARTINA_SCENARIO_ID) {
-    return "已定位到互花米草区域，可直接运行变化检测。";
+    return "已定位到互花米草区域，可直接叠加提取掩膜。";
   }
   if (scenarioId === "image_retrieval") {
     return "上传 GeoTIFF 后即可运行语义检索。";
@@ -92,14 +100,21 @@ export default function App() {
   const [artifacts, setArtifacts] = useState({});
   const [referencePoints, setReferencePoints] = useState([]);
   const [uploadedTifMeta, setUploadedTifMeta] = useState(null);
-  const [spartinaPoints, setSpartinaPoints] = useState([]);
   const [isParsingTif, setIsParsingTif] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(true);
+  const [spartinaMaskPreviewToken, setSpartinaMaskPreviewToken] = useState("");
 
+  const isSpartinaScenario = selectedScenarioId === SPARTINA_SCENARIO_ID;
   const similarityMode = isSimilarityScenario(selectedScenarioId);
+  const visibleScenarios = scenarios.filter(
+    (scenario) => !HIDDEN_SCENARIO_IDS.has(scenario.scenario_id)
+  );
   const selectedScenario = scenarios.find(
     (scenario) => scenario.scenario_id === selectedScenarioId
+  );
+  const spartinaMaskLayerVisible = layers.some(
+    (layer) => layer.layer_id === "spartina-mask-overlay" && layer.visible
   );
   const latestReferencePoint =
     referencePoints.length > 0 ? referencePoints[referencePoints.length - 1] : null;
@@ -131,7 +146,6 @@ export default function App() {
         setStatus("已添加参考点，可继续选点或直接运行查询。");
       },
       referencePoints,
-      scenarioPoints: spartinaPoints,
       selectedScenarioId,
       similarityMode
     });
@@ -158,29 +172,6 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
-    async function bootstrapSpartinaPoints() {
-      try {
-        const points = await loadSpartinaPoints();
-        if (!cancelled) {
-          setSpartinaPoints(points);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          setError((current) => current || loadError.message);
-        }
-      }
-    }
-
-    bootstrapSpartinaPoints();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
     async function loadScenarioDescriptors() {
       try {
         const scenarioResponse = await fetchScenarios();
@@ -189,12 +180,17 @@ export default function App() {
         }
 
         setScenarios(scenarioResponse);
+        const nextVisibleScenarios = scenarioResponse.filter(
+          (scenario) => !HIDDEN_SCENARIO_IDS.has(scenario.scenario_id)
+        );
         if (
-          !scenarioResponse.some(
+          !nextVisibleScenarios.some(
             (scenario) => scenario.scenario_id === selectedScenarioId
           )
         ) {
-          setSelectedScenarioId(scenarioResponse[0]?.scenario_id || "embedding_intro");
+          setSelectedScenarioId(
+            nextVisibleScenarios[0]?.scenario_id || "embedding_intro"
+          );
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -452,12 +448,7 @@ export default function App() {
           include_vector_probe: params.includeVectorProbe
         };
       } else if (selectedScenarioId === SPARTINA_SCENARIO_ID) {
-        payload = {
-          rgb_bands: [params.bandR, params.bandG, params.bandB],
-          rgb_min: params.rgbMin,
-          rgb_max: params.rgbMax,
-          scale: params.scale
-        };
+        payload = {};
       } else {
         if (referencePoints.length === 0) {
           throw new Error("请先设置参考点。");
@@ -479,7 +470,14 @@ export default function App() {
         };
       }
 
+      if (selectedScenarioId === SPARTINA_SCENARIO_ID) {
+        setStatus("正在提取互花米草掩膜...");
+        await sleep(SPARTINA_EXTRACTION_DELAY_MS);
+      }
+
       const response = await runScenario(selectedScenarioId, payload);
+      const spartinaMaskToken =
+        selectedScenarioId === SPARTINA_SCENARIO_ID ? String(Date.now()) : "";
       if (similarityMode) {
         requestAutoFit();
       }
@@ -488,10 +486,22 @@ export default function App() {
         Array.isArray(response.layers)
           ? response.layers.map((layer) => ({
               ...layer,
+              ...(
+                selectedScenarioId === SPARTINA_SCENARIO_ID &&
+                layer.layer_id === "spartina-mask-overlay" &&
+                typeof layer.image_url === "string"
+                  ? {
+                      image_url: `${layer.image_url}?v=${encodeURIComponent(spartinaMaskToken)}`
+                    }
+                  : {}
+              ),
               ...getLayerDefaults(selectedScenarioId, layer)
             }))
           : []
       );
+      if (selectedScenarioId === SPARTINA_SCENARIO_ID) {
+        setSpartinaMaskPreviewToken(spartinaMaskToken);
+      }
       setSummaries(response.summaries || {});
       setArtifacts(response.artifacts || {});
       setStatus("分析完成，结果已叠加到地图上。");
@@ -543,7 +553,7 @@ export default function App() {
         params={params}
         referencePoints={referencePoints}
         runDisabled={runDisabled}
-        scenarios={scenarios}
+        scenarios={visibleScenarios}
         selectedScenario={selectedScenario}
         selectedScenarioId={selectedScenarioId}
         similarityMode={similarityMode}
@@ -553,6 +563,12 @@ export default function App() {
 
       <main className="mapPane">
         <div className="mapViewport" ref={mapHostRef} />
+        <SpartinaTifOverlay
+          isRightPanelCollapsed={isRightPanelCollapsed}
+          maskPreviewToken={spartinaMaskPreviewToken}
+          showMaskPreview={spartinaMaskLayerVisible}
+          visible={selectedScenarioId === SPARTINA_SCENARIO_ID}
+        />
       </main>
 
       <RightPanel
@@ -564,6 +580,8 @@ export default function App() {
           setIsRightPanelCollapsed((current) => !current)
         }
         onToggleLayer={updateLayerVisibility}
+        showArtifacts={!isSpartinaScenario}
+        showSummaries={!isSpartinaScenario}
         summaries={summaries}
       />
     </div>

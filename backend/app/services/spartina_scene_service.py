@@ -1,21 +1,16 @@
 from __future__ import annotations
 
 import csv
+from io import BytesIO
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
-import ee
-
-from backend.app.services.embedding_service import (
-    get_embeddings_image_for_geometry,
-    get_geometry_bounds,
-)
-from backend.app.services.tile_service import get_tile_url
+import numpy as np
+import rasterio
+from PIL import Image
 
 
-SPARTINA_YEARS = (2023, 2024, 2025)
-SPARTINA_CHANGE_YEAR_PAIR = (2023, 2025)
 SPARTINA_ASSET_DIR = (
     Path(__file__).resolve().parents[3]
     / "react-google-earth-test"
@@ -24,7 +19,10 @@ SPARTINA_ASSET_DIR = (
     / "spartina"
 )
 SPARTINA_CSV_PATH = SPARTINA_ASSET_DIR / "互花米草坐标.csv"
-CHANGE_PALETTE = ["001f3f", "0f7fe4", "39d0d4", "f3d04f", "f25f5c"]
+SPARTINA_MASK_PATH = SPARTINA_ASSET_DIR / "spartina_mask_v1.tif"
+SPARTINA_MASK_COLOR = (214, 69, 80)
+SPARTINA_MASK_ALPHA = 140
+SPARTINA_MASK_PREVIEW_PATH = "/api/scenarios/spartina_change_detection/mask-preview"
 
 
 def parse_dms_coordinate(value: str) -> float:
@@ -60,30 +58,35 @@ def load_spartina_points() -> List[List[float]]:
 
 @lru_cache(maxsize=1)
 def get_spartina_bounds() -> List[List[float]]:
-    points = load_spartina_points()
-    longitudes = [point[0] for point in points]
-    latitudes = [point[1] for point in points]
+    if not SPARTINA_MASK_PATH.exists():
+        raise FileNotFoundError(f"Spartina mask not found: {SPARTINA_MASK_PATH}")
+
+    with rasterio.open(SPARTINA_MASK_PATH) as dataset:
+        bounds = dataset.bounds
+
     return [
-        [min(latitudes), min(longitudes)],
-        [max(latitudes), max(longitudes)],
+        [float(bounds.bottom), float(bounds.left)],
+        [float(bounds.top), float(bounds.right)],
     ]
 
 
 @lru_cache(maxsize=1)
-def get_spartina_geometry_payload() -> Dict[str, object]:
-    bounds = get_spartina_bounds()
-    south, west = bounds[0]
-    north, east = bounds[1]
-    return {
-        "type": "Polygon",
-        "coordinates": [[
-            [west, north],
-            [east, north],
-            [east, south],
-            [west, south],
-            [west, north],
-        ]],
-    }
+def get_spartina_mask_preview_png() -> bytes:
+    if not SPARTINA_MASK_PATH.exists():
+        raise FileNotFoundError(f"Spartina mask not found: {SPARTINA_MASK_PATH}")
+
+    with rasterio.open(SPARTINA_MASK_PATH) as dataset:
+        mask = dataset.read(1)
+
+    rgba = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
+    rgba[..., 0] = SPARTINA_MASK_COLOR[0]
+    rgba[..., 1] = SPARTINA_MASK_COLOR[1]
+    rgba[..., 2] = SPARTINA_MASK_COLOR[2]
+    rgba[..., 3] = np.where(mask > 0, SPARTINA_MASK_ALPHA, 0).astype(np.uint8)
+
+    buffer = BytesIO()
+    Image.fromarray(rgba).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 @lru_cache(maxsize=1)
@@ -98,67 +101,3 @@ def get_spartina_default_view() -> Dict[str, object]:
             "lng": (west + east) / 2,
         },
     }
-
-
-def get_spartina_rgb_tile(
-    year: int,
-    bands: List[str],
-    min_value: float,
-    max_value: float,
-) -> Tuple[str, List[List[float]]]:
-    geometry_payload = get_spartina_geometry_payload()
-    image, geometry = get_embeddings_image_for_geometry(year, geometry_payload)
-    clipped = image.clip(geometry)
-    tile_url = get_tile_url(
-        clipped,
-        {
-            "bands": bands,
-            "min": min_value,
-            "max": max_value,
-        },
-    )
-    return tile_url, get_geometry_bounds(geometry_payload)
-
-
-def build_cosine_difference_image(year_a: int, year_b: int) -> Tuple[ee.Image, ee.Geometry]:
-    geometry_payload = get_spartina_geometry_payload()
-    image_a, geometry = get_embeddings_image_for_geometry(year_a, geometry_payload)
-    image_b, _ = get_embeddings_image_for_geometry(year_b, geometry_payload)
-    image_a = image_a.clip(geometry)
-    image_b = image_b.clip(geometry)
-
-    dot_product = image_a.multiply(image_b).reduce(ee.Reducer.sum())
-    norm_a = image_a.pow(2).reduce(ee.Reducer.sum()).sqrt()
-    norm_b = image_b.pow(2).reduce(ee.Reducer.sum()).sqrt()
-    denominator = norm_a.multiply(norm_b).max(ee.Image.constant(1e-6))
-    cosine_similarity = dot_product.divide(denominator)
-    change_image = ee.Image.constant(1).subtract(cosine_similarity).rename("change")
-    return change_image.clip(geometry), geometry
-
-
-def get_spartina_change_tile() -> str:
-    change_image, _ = build_cosine_difference_image(*SPARTINA_CHANGE_YEAR_PAIR)
-    return get_tile_url(
-        change_image,
-        {
-            "min": 0,
-            "max": 1,
-            "palette": CHANGE_PALETTE,
-        },
-    )
-
-
-def get_region_mean_change(year_a: int, year_b: int, scale: float) -> float:
-    change_image, geometry = build_cosine_difference_image(year_a, year_b)
-    value = (
-        change_image.reduceRegion(
-            reducer=ee.Reducer.mean(),
-            geometry=geometry,
-            scale=scale,
-            bestEffort=True,
-            maxPixels=1_000_000,
-        )
-        .get("change")
-        .getInfo()
-    )
-    return round(float(value), 6)

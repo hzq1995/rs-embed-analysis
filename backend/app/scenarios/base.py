@@ -11,6 +11,7 @@ from backend.app.schemas.common import ScenarioDescriptor, ScenarioRunResponse
 class Scenario(ABC):
     scenario_id: str
     request_model: Type[BaseModel]
+    requires_ee: bool = True
 
     @property
     @abstractmethod

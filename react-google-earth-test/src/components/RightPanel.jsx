@@ -8,6 +8,8 @@ export default function RightPanel({
   onOpacityChange,
   onToggleCollapse,
   onToggleLayer,
+  showArtifacts = true,
+  showSummaries = true,
   summaries
 }) {
   return (
@@ -42,30 +44,34 @@ export default function RightPanel({
             )}
           </section>
 
-          <section className="sideSection">
-            <h2>摘要</h2>
-            {Object.keys(summaries).length === 0 ? (
-              <p className="placeholder">暂无摘要结果。</p>
-            ) : (
-              <div className="summaryList">
-                {Object.entries(summaries).map(([key, value]) => (
-                  <div className="summaryRow" key={key}>
-                    <span>{key}</span>
-                    <strong>{formatValue(value)}</strong>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
+          {showSummaries ? (
+            <section className="sideSection">
+              <h2>摘要</h2>
+              {Object.keys(summaries).length === 0 ? (
+                <p className="placeholder">暂无摘要结果。</p>
+              ) : (
+                <div className="summaryList">
+                  {Object.entries(summaries).map(([key, value]) => (
+                    <div className="summaryRow" key={key}>
+                      <span>{key}</span>
+                      <strong>{formatValue(value)}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : null}
 
-          <section className="sideSection">
-            <h2>Artifacts</h2>
-            {Object.keys(artifacts).length === 0 ? (
-              <p className="placeholder">当前没有额外 artifacts。</p>
-            ) : (
-              <pre className="artifactBox">{JSON.stringify(artifacts, null, 2)}</pre>
-            )}
-          </section>
+          {showArtifacts ? (
+            <section className="sideSection">
+              <h2>Artifacts</h2>
+              {Object.keys(artifacts).length === 0 ? (
+                <p className="placeholder">当前没有额外 artifacts。</p>
+              ) : (
+                <pre className="artifactBox">{JSON.stringify(artifacts, null, 2)}</pre>
+              )}
+            </section>
+          ) : null}
         </>
       )}
     </aside>

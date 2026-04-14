@@ -1,5 +1,6 @@
 export default function TileOverlay({ layer, onToggle, onOpacityChange }) {
-  const supportsOpacity = layer.layer_type === "raster_tile";
+  const supportsOpacity =
+    layer.layer_type === "raster_tile" || layer.layer_type === "image_overlay";
 
   return (
     <div className="layerCard">

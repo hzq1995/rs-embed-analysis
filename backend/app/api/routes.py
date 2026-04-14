@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import ValidationError
 
 from backend.app.config import get_settings
@@ -16,6 +16,7 @@ from backend.app.schemas.common import (
 from backend.app.scenarios.registry import registry
 from backend.app.services.ee_auth_service import authenticate_and_initialize
 from backend.app.services.embedding_service import fetch_embedding
+from backend.app.services.spartina_scene_service import get_spartina_mask_preview_png
 
 
 router = APIRouter(prefix="/api")
@@ -34,6 +35,19 @@ def health() -> HealthResponse:
 @router.get("/scenarios", response_model=list[ScenarioDescriptor])
 def list_scenarios() -> list[ScenarioDescriptor]:
     return [scenario.descriptor for scenario in registry.list()]
+
+
+@router.get("/scenarios/spartina_change_detection/mask-preview")
+def spartina_mask_preview() -> Response:
+    try:
+        return Response(
+            content=get_spartina_mask_preview_png(),
+            media_type="image/png",
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/embedding/vector", response_model=EmbeddingVectorResponse)
@@ -66,7 +80,8 @@ def run_scenario(scenario_id: str, payload: dict) -> ScenarioRunResponse:
 
     try:
         scenario.request_model.model_validate(payload)
-        authenticate_and_initialize(settings.ee_project, settings.ee_auth_mode)
+        if scenario.requires_ee:
+            authenticate_and_initialize(settings.ee_project, settings.ee_auth_mode)
         return scenario.run(payload)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=json.loads(exc.json())) from exc

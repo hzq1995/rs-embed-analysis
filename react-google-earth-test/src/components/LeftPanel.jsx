@@ -83,9 +83,9 @@ export default function LeftPanel({
       {isSpartinaScenario ? (
         <div className="scenarioBox">
           <strong>互花米草区域示意</strong>
-          <p>对比不同年 embedding，展示互花米草的变化过程。</p>
+          <p>运行后会将互花米草提取掩膜以半透明方式叠加到地图上。</p>
           <div className="scenarioPreview">
-            <img alt="互花米草变化检测示意图" src={SPARTINA_PREVIEW_IMAGE} />
+            <img alt="互花米草提取示意图" src={SPARTINA_PREVIEW_IMAGE} />
           </div>
         </div>
       ) : null}
@@ -153,21 +153,20 @@ export default function LeftPanel({
         </div>
       ) : null}
 
-      <details className="paramsPanel">
+      {isSpartinaScenario ? null : (
+        <details className="paramsPanel">
         <summary className="paramsSummary">参数设置</summary>
         <div className="fieldGrid">
-          {!isSpartinaScenario ? (
-            <label className="field">
-              <span>年份</span>
-              <input
-                name="year"
-                type="number"
-                min="2017"
-                value={params.year}
-                onChange={onParamChange}
-              />
-            </label>
-          ) : null}
+          <label className="field">
+            <span>年份</span>
+            <input
+              name="year"
+              type="number"
+              min="2017"
+              value={params.year}
+              onChange={onParamChange}
+            />
+          </label>
 
           {similarityMode ? (
             <>
@@ -407,7 +406,8 @@ export default function LeftPanel({
             </>
           )}
         </div>
-      </details>
+        </details>
+      )}
 
       <p className="statusLine">{status}</p>
       {error ? <p className="errorText">{error}</p> : null}

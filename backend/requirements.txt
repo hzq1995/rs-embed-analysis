@@ -4,3 +4,5 @@ uvicorn
 pydantic
 numpy
 scikit-learn
+Pillow
+rasterio

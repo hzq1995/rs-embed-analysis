@@ -12,6 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 定义后端和前端目录
 BACKEND_DIR="$SCRIPT_DIR"
 FRONTEND_DIR="$SCRIPT_DIR/react-google-earth-test"
+BACKEND_HOST="127.0.0.1"
+FRONTEND_HOST="127.0.0.1"
 
 # 颜色定义
 GREEN='\033[0;32m'
@@ -21,6 +23,16 @@ NC='\033[0m' # No Color
 
 # 进程 ID 数组
 declare -a PIDS=()
+
+# 查找可用端口：从起始端口开始，找到第一个未被占用的端口
+find_free_port() {
+    local port=$1
+    while ss -tlnH "sport = :$port" 2>/dev/null | grep -q ":$port"; do
+        echo -e "${YELLOW}[INFO]${NC} 端口 $port 已被占用，尝试 $((port + 1))..." >&2
+        port=$((port + 1))
+    done
+    echo "$port"
+}
 
 # 清理函数：杀死所有子进程
 cleanup() {
@@ -63,6 +75,13 @@ fi
 
 echo -e "${GREEN}[Start]${NC} 启动前后端服务..."
 
+# 先确定本次启动要绑定的前后端端口，保证两边使用同一组配置
+BACKEND_PORT=$(find_free_port 8000)
+FRONTEND_PORT=$(find_free_port 5173)
+BACKEND_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
+FRONTEND_URL="http://${FRONTEND_HOST}:${FRONTEND_PORT}"
+ALLOWED_ORIGINS="${FRONTEND_URL},http://localhost:${FRONTEND_PORT},http://127.0.0.1:${FRONTEND_PORT}"
+
 # 启动后端服务
 echo -e "${YELLOW}[INFO]${NC} 启动后端服务 (FastAPI)..."
 cd "$BACKEND_DIR"
@@ -73,10 +92,11 @@ if [ ! -d "venv" ] && [ ! -d ".venv" ]; then
 fi
 
 # 使用 uvicorn 启动后端
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload > /tmp/backend.log 2>&1 &
+ALLOWED_ORIGINS="$ALLOWED_ORIGINS" \
+uvicorn backend.app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload > /tmp/backend_${BACKEND_PORT}.log 2>&1 &
 BACKEND_PID=$!
 PIDS+=($BACKEND_PID)
-echo -e "${GREEN}[Success]${NC} 后端已启动 (PID: $BACKEND_PID, 端口: 8000)"
+echo -e "${GREEN}[Success]${NC} 后端已启动 (PID: $BACKEND_PID, 端口: $BACKEND_PORT)"
 
 # 启动前端服务
 echo -e "${YELLOW}[INFO]${NC} 启动前端服务 (React + Vite)..."
@@ -89,17 +109,20 @@ if [ ! -d "node_modules" ]; then
 fi
 
 # 启动前端开发服务器
-npm run dev > /tmp/frontend.log 2>&1 &
+VITE_API_BASE_URL="$BACKEND_URL" \
+npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" --strictPort > /tmp/frontend_${FRONTEND_PORT}.log 2>&1 &
 FRONTEND_PID=$!
 PIDS+=($FRONTEND_PID)
-echo -e "${GREEN}[Success]${NC} 前端已启动 (PID: $FRONTEND_PID)"
+echo -e "${GREEN}[Success]${NC} 前端已启动 (PID: $FRONTEND_PID, 端口: $FRONTEND_PORT)"
 
 # 输出日志文件位置
 echo -e "\n${GREEN}[Success]${NC} 所有服务已启动！"
-echo -e "${YELLOW}[INFO]${NC} 后端日志: /tmp/backend.log"
-echo -e "${YELLOW}[INFO]${NC} 前端日志: /tmp/frontend.log"
-echo -e "${YELLOW}[INFO]${NC} 后端地址: http://localhost:8000"
-echo -e "${YELLOW}[INFO]${NC} 前端地址: http://localhost:5173 (或显示的其他端口)"
+echo -e "${YELLOW}[INFO]${NC} 后端日志: /tmp/backend_${BACKEND_PORT}.log"
+echo -e "${YELLOW}[INFO]${NC} 前端日志: /tmp/frontend_${FRONTEND_PORT}.log"
+echo -e "${YELLOW}[INFO]${NC} 后端地址: ${BACKEND_URL}"
+echo -e "${YELLOW}[INFO]${NC} 前端地址: ${FRONTEND_URL}"
+echo -e "${YELLOW}[INFO]${NC} 本次前端将请求: ${BACKEND_URL}"
+echo -e "${YELLOW}[INFO]${NC} 本次后端允许来源: ${ALLOWED_ORIGINS}"
 echo -e "\n${YELLOW}[INFO]${NC} 按 Ctrl+C 停止所有服务...\n"
 
 # 等待所有后台进程
