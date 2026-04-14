@@ -1110,7 +1110,7 @@ export default function App() {
                     onChange={handleParamChange}
                     type="checkbox"
                   />
-                  <span>返回 ROI 质心 embedding 调试向量</span>
+                  <span>返回 ROI 质心 embedding 向量</span>
                 </label>
               </>
             )}
