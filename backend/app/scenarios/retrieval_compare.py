@@ -31,6 +31,7 @@ class ClickQueryScenario(Scenario):
                 "year",
                 "scale",
                 "candidate_threshold",
+                "min_result_spacing_m",
             ],
             supported_outputs=["point_collection", "summary_only"],
         )

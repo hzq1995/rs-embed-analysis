@@ -72,6 +72,12 @@ class LayerModel(AppBaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class ScenarioDefaultView(AppBaseModel):
+    bounds: List[List[float]]
+    center: Optional[Dict[str, float]] = None
+    zoom: Optional[float] = None
+
+
 class ScenarioDescriptor(AppBaseModel):
     scenario_id: str
     name: str
@@ -79,6 +85,7 @@ class ScenarioDescriptor(AppBaseModel):
     status: Literal["ready", "planned", "not_implemented"]
     supported_inputs: List[str]
     supported_outputs: List[str]
+    default_view: Optional[ScenarioDefaultView] = None
 
 
 class ScenarioRunResponse(AppBaseModel):
@@ -133,6 +140,20 @@ class EmbeddingIntroRequest(AppBaseModel):
         return rgb_bands
 
 
+class SpartinaChangeRequest(AppBaseModel):
+    rgb_bands: List[BandName] = Field(default_factory=lambda: ["A01", "A16", "A09"])
+    rgb_min: float = -0.3
+    rgb_max: float = 0.3
+    scale: float = Field(default=10, gt=0)
+
+    @field_validator("rgb_bands")
+    @classmethod
+    def validate_band_count(cls, rgb_bands: List[str]) -> List[str]:
+        if len(rgb_bands) != 3:
+            raise ValueError("rgb_bands must include exactly 3 bands.")
+        return rgb_bands
+
+
 class SimilaritySearchRequest(AppBaseModel):
     reference_point: Optional[List[float]] = None
     reference_points: Optional[List[List[float]]] = None
@@ -142,6 +163,7 @@ class SimilaritySearchRequest(AppBaseModel):
     year: int = Field(default=2024, ge=2017, le=2100)
     scale: float = Field(default=10, gt=0)
     candidate_threshold: float = Field(default=0.90, ge=-1, le=1)
+    min_result_spacing_m: float = Field(default=0, ge=0, le=50000)
 
     @field_validator("reference_point")
     @classmethod

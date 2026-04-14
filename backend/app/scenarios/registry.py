@@ -6,6 +6,7 @@ from backend.app.scenarios.base import Scenario
 from backend.app.scenarios.embedding_intro import EmbeddingIntroScenario
 from backend.app.scenarios.mask_segmentation import ImageRetrievalScenario
 from backend.app.scenarios.retrieval_compare import ClickQueryScenario
+from backend.app.scenarios.spartina_change_detection import SpartinaChangeDetectionScenario
 
 
 class ScenarioRegistry:
@@ -14,6 +15,7 @@ class ScenarioRegistry:
             EmbeddingIntroScenario(),
             ImageRetrievalScenario(),
             ClickQueryScenario(),
+            SpartinaChangeDetectionScenario(),
         ]
         self._scenarios: Dict[str, Scenario] = {
             scenario.scenario_id: scenario

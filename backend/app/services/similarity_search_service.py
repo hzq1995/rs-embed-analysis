@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import atan2, cos, radians, sin, sqrt
 from typing import Any, Dict, List, Tuple
 
 import ee
@@ -57,10 +58,53 @@ def get_reference_points(request: SimilaritySearchRequest) -> List[List[float]]:
     raise RuntimeError("Similarity search request is missing reference points.")
 
 
+def haversine_distance_meters(point_a: List[float], point_b: List[float]) -> float:
+    lon1, lat1 = point_a
+    lon2, lat2 = point_b
+    earth_radius_m = 6_371_000
+
+    lat1_rad = radians(lat1)
+    lat2_rad = radians(lat2)
+    delta_lat = radians(lat2 - lat1)
+    delta_lon = radians(lon2 - lon1)
+    a = (
+        sin(delta_lat / 2) ** 2
+        + cos(lat1_rad) * cos(lat2_rad) * sin(delta_lon / 2) ** 2
+    )
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    return earth_radius_m * c
+
+
+def apply_result_spacing(
+    scored_features: List[Dict[str, Any]],
+    min_result_spacing_m: float,
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    if min_result_spacing_m <= 0:
+        return scored_features[:top_k]
+
+    filtered_features: List[Dict[str, Any]] = []
+    for feature in scored_features:
+        candidate_point = feature["geometry"]["coordinates"]
+        if any(
+            haversine_distance_meters(candidate_point, kept["geometry"]["coordinates"])
+            < min_result_spacing_m
+            for kept in filtered_features
+        ):
+            continue
+
+        filtered_features.append(feature)
+        if len(filtered_features) >= top_k:
+            break
+
+    return filtered_features
+
+
 def serialize_match_features(
     feature_collection_info: Dict[str, Any],
     top_k: int,
-) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    min_result_spacing_m: float = 0,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], int]:
     raw_features = feature_collection_info.get("features", [])
     scored_features = []
 
@@ -90,10 +134,11 @@ def serialize_match_features(
         )
 
     scored_features.sort(key=lambda item: item["properties"]["score"], reverse=True)
+    filtered_features = apply_result_spacing(scored_features, min_result_spacing_m, top_k)
     ranked_features = []
     matches = []
 
-    for rank, feature in enumerate(scored_features[:top_k], start=1):
+    for rank, feature in enumerate(filtered_features, start=1):
         lon, lat = feature["geometry"]["coordinates"]
         score = round(feature["properties"]["score"], 6)
         ranked_feature = {
@@ -117,7 +162,7 @@ def serialize_match_features(
     return {
         "type": "FeatureCollection",
         "features": ranked_features,
-    }, matches
+    }, matches, len(scored_features)
 
 
 def run_similarity_search(request: SimilaritySearchRequest) -> Dict[str, Any]:
@@ -153,10 +198,14 @@ def run_similarity_search(request: SimilaritySearchRequest) -> Dict[str, Any]:
         ee.FeatureCollection(candidate_polygons.map(score_candidate))
         .filter(ee.Filter.notNull(["score"]))
         .sort("score", False)
-        .limit(request.top_k)
+        .limit(min(max(request.top_k * 10, request.top_k), 1000))
     )
 
-    geojson, matches = serialize_match_features(ranked_candidates.getInfo(), request.top_k)
+    geojson, matches, raw_result_count = serialize_match_features(
+        ranked_candidates.getInfo(),
+        request.top_k,
+        request.min_result_spacing_m,
+    )
     return {
         "geojson": geojson,
         "matches": matches,
@@ -165,9 +214,11 @@ def run_similarity_search(request: SimilaritySearchRequest) -> Dict[str, Any]:
             "search_size_km": request.search_size_km,
             "top_k_requested": request.top_k,
             "result_count": len(matches),
+            "raw_result_count": raw_result_count,
             "reference_point_count": len(reference_points),
             "reference_points": reference_points,
             "search_center": request.search_center,
             "candidate_threshold": request.candidate_threshold,
+            "min_result_spacing_m": request.min_result_spacing_m,
         },
     }

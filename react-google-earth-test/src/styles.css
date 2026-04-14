@@ -467,6 +467,20 @@ h2 {
   padding: 15px;
 }
 
+.scenarioPreview {
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(115, 159, 255, 0.16);
+  border-radius: 18px;
+  background: rgba(6, 12, 24, 0.7);
+}
+
+.scenarioPreview img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .leftPanel > .scenarioBox:first-of-type {
   padding: 18px 16px;
   border-color: rgba(74, 150, 255, 0.28);
@@ -569,6 +583,12 @@ h2 {
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
+}
+
+.ghostBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .checkboxRow,

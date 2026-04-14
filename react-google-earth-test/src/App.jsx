@@ -1,194 +1,26 @@
-﻿import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchScenarios, runScenario } from "./api";
+import LeftPanel from "./components/LeftPanel";
+import RightPanel from "./components/RightPanel";
 import { parseGeoTiffSamplePoints } from "./geotiffUtils";
-import { loadGoogleMaps } from "./googleMaps";
-
-const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
-const ROI_INSET_RATIO = 0;
-const BAND_OPTIONS = Array.from({ length: 64 }, (_, index) =>
-  `A${String(index).padStart(2, "0")}`
-);
-const SIMILARITY_SCENARIOS = new Set(["image_retrieval", "click_query"]);
-
-const defaultParams = {
-  year: 2024,
-  bandR: "A01",
-  bandG: "A16",
-  bandB: "A09",
-  rgbMin: -0.3,
-  rgbMax: 0.3,
-  clusterCount: 5,
-  sampleCount: 300,
-  scale: 10,
-  seed: 100,
-  includeVectorProbe: false,
-  searchSizeKm: 3,
-  topK: 10,
-  candidateThreshold: 0.9,
-  imageSampleCount: 9,
-  imageMaxSpacingMeters: 10
-};
-
-function isSimilarityScenario(scenarioId) {
-  return SIMILARITY_SCENARIOS.has(scenarioId);
-}
-
-function buildGeoJsonPolygon(points) {
-  const coordinates = points.map((point) => [point.lng, point.lat]);
-  if (coordinates.length === 0) {
-    return null;
-  }
-
-  const first = coordinates[0];
-  const last = coordinates[coordinates.length - 1];
-  if (!last || first[0] !== last[0] || first[1] !== last[1]) {
-    coordinates.push(first);
-  }
-
-  return {
-    type: "Polygon",
-    coordinates: [coordinates]
-  };
-}
-
-function buildViewportInsetPolygon(bounds, insetRatio = ROI_INSET_RATIO) {
-  if (!bounds) {
-    return [];
-  }
-
-  const { north, east, south, west } = bounds;
-  const latPadding = (north - south) * insetRatio;
-  const lngPadding = (east - west) * insetRatio;
-
-  return [
-    { lat: north - latPadding, lng: west + lngPadding },
-    { lat: north - latPadding, lng: east - lngPadding },
-    { lat: south + latPadding, lng: east - lngPadding },
-    { lat: south + latPadding, lng: west + lngPadding }
-  ];
-}
-
-function extractMapSnapshot(map) {
-  const center = map.getCenter();
-  const bounds = map.getBounds();
-  const northEast = bounds?.getNorthEast();
-  const southWest = bounds?.getSouthWest();
-
-  if (!center || !northEast || !southWest) {
-    return null;
-  }
-
-  return {
-    center: {
-      lat: center.lat(),
-      lng: center.lng()
-    },
-    bounds: {
-      north: northEast.lat(),
-      east: northEast.lng(),
-      south: southWest.lat(),
-      west: southWest.lng()
-    }
-  };
-}
-
-function formatValue(value) {
-  if (value == null) {
-    return "-";
-  }
-  if (typeof value === "number") {
-    return Number.isInteger(value) ? String(value) : value.toFixed(6);
-  }
-  if (Array.isArray(value)) {
-    return value.join(", ");
-  }
-  if (typeof value === "object") {
-    return JSON.stringify(value, null, 2);
-  }
-  return String(value);
-}
-
-function formatCoordinate(point) {
-  if (!point) {
-    return "-";
-  }
-  return `${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`;
-}
-
-function extractPointFeatures(layer) {
-  if (
-    layer?.layer_type !== "point_collection" ||
-    layer?.geojson?.type !== "FeatureCollection"
-  ) {
-    return [];
-  }
-
-  const features = Array.isArray(layer.geojson.features) ? layer.geojson.features : [];
-  return features
-    .map((feature) => {
-      if (feature?.geometry?.type !== "Point") {
-        return null;
-      }
-
-      const [lng, lat] = feature.geometry.coordinates || [];
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-        return null;
-      }
-
-      return { lat, lng };
-    })
-    .filter(Boolean);
-}
-
-function getScenarioHint(scenarioId) {
-  if (scenarioId === "image_retrieval") {
-    return "上传 GeoTIFF，均匀取点后用平均 embedding 运行相似检索，参考点最大相邻间距默认 10 米。";
-  }
-  if (scenarioId === "click_query") {
-    return "点击地图可连续添加多个参考点，系统会用平均 embedding 做检索。";
-  }
-  return "当前视野会生成一个内缩 ROI，并叠加嵌入分析图层。";
-}
-
-function TileOverlay({ layer, onToggle, onOpacityChange }) {
-  const supportsOpacity = layer.layer_type === "raster_tile";
-
-  return (
-    <div className="layerCard">
-      <label className="layerHeader">
-        <input
-          checked={layer.visible}
-          onChange={(event) => onToggle(layer.layer_id, event.target.checked)}
-          type="checkbox"
-        />
-        <span>{layer.name}</span>
-      </label>
-      <div className="layerMeta">{layer.layer_type}</div>
-      {supportsOpacity ? (
-        <label className="sliderRow">
-          <span>透明度</span>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.05"
-            value={layer.opacity}
-            onChange={(event) =>
-              onOpacityChange(layer.layer_id, Number(event.target.value))
-            }
-          />
-        </label>
-      ) : null}
-    </div>
-  );
-}
+import { useGoogleMapScene } from "./hooks/useGoogleMapScene";
+import { buildGeoJsonPolygon, buildViewportInsetPolygon } from "./mapUtils";
+import { loadSpartinaPoints } from "./spartinaUtils";
+import {
+  defaultParams,
+  isSimilarityScenario,
+  SPARTINA_SCENARIO_ID
+} from "./scenarioConfig";
 
 const PARAMS_STORAGE_KEY = "rs_embed_params";
+const SCENARIO_VIEW_STORAGE_KEY = "rs_embed_scenario_views";
 
 function loadStoredParams() {
   try {
     const raw = localStorage.getItem(PARAMS_STORAGE_KEY);
-    if (!raw) return defaultParams;
+    if (!raw) {
+      return defaultParams;
+    }
     const stored = JSON.parse(raw);
     return {
       ...defaultParams,
@@ -200,34 +32,109 @@ function loadStoredParams() {
   }
 }
 
+function loadStoredScenarioViews() {
+  try {
+    const raw = localStorage.getItem(SCENARIO_VIEW_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const stored = JSON.parse(raw);
+    return stored && typeof stored === "object" ? stored : {};
+  } catch {
+    return {};
+  }
+}
+
+function shouldRememberScenarioView(scenarioId) {
+  return Boolean(scenarioId) && scenarioId !== SPARTINA_SCENARIO_ID;
+}
+
+function isSameSnapshot(snapshotA, snapshotB) {
+  return JSON.stringify(snapshotA) === JSON.stringify(snapshotB);
+}
+
+function getLayerDefaults(scenarioId, layer) {
+  const isEmbeddingRgbLayer =
+    typeof layer.name === "string" && layer.name.includes("Embedding RGB");
+
+  return {
+    visible: !isEmbeddingRgbLayer,
+    opacity: typeof layer.opacity === "number" ? layer.opacity : 1
+  };
+}
+
+function getScenarioStatusText(scenarioId) {
+  if (scenarioId === SPARTINA_SCENARIO_ID) {
+    return "已定位到互花米草区域，可直接运行变化检测。";
+  }
+  if (scenarioId === "image_retrieval") {
+    return "上传 GeoTIFF 后即可运行语义检索。";
+  }
+  if (scenarioId === "click_query") {
+    return "点击地图添加参考点后即可运行选点查询。";
+  }
+  return "地图已就绪，可直接运行当前场景。";
+}
+
 export default function App() {
-  const mapHostRef = useRef(null);
-  const mapRef = useRef(null);
-  const mapsRef = useRef(null);
-  const listenersRef = useRef([]);
-  const referenceMarkersRef = useRef([]);
-  const resultMarkersRef = useRef([]);
-  const infoWindowRef = useRef(null);
   const fileInputRef = useRef(null);
   const uploadedTifFileRef = useRef(null);
-  const selectedScenarioIdRef = useRef("embedding_intro");
-  const pendingAutoFitRef = useRef(false);
-
-  const [mapReady, setMapReady] = useState(false);
+  const restoredScenarioIdRef = useRef(null);
   const [status, setStatus] = useState("正在加载地图和场景配置...");
   const [error, setError] = useState("");
   const [scenarios, setScenarios] = useState([]);
   const [selectedScenarioId, setSelectedScenarioId] = useState("embedding_intro");
   const [params, setParams] = useState(loadStoredParams);
-  const [mapSnapshot, setMapSnapshot] = useState(null);
+  const [scenarioViews, setScenarioViews] = useState(loadStoredScenarioViews);
   const [layers, setLayers] = useState([]);
   const [summaries, setSummaries] = useState({});
   const [artifacts, setArtifacts] = useState({});
   const [referencePoints, setReferencePoints] = useState([]);
   const [uploadedTifMeta, setUploadedTifMeta] = useState(null);
+  const [spartinaPoints, setSpartinaPoints] = useState([]);
   const [isParsingTif, setIsParsingTif] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(true);
+
+  const similarityMode = isSimilarityScenario(selectedScenarioId);
+  const selectedScenario = scenarios.find(
+    (scenario) => scenario.scenario_id === selectedScenarioId
+  );
+  const latestReferencePoint =
+    referencePoints.length > 0 ? referencePoints[referencePoints.length - 1] : null;
+
+  const {
+    applyMapSnapshot,
+    fitToBounds,
+    mapHostRef,
+    mapReady,
+    mapSnapshot,
+    requestAutoFit
+  } =
+    useGoogleMapScene({
+      layers,
+      onError: (bootstrapError) => {
+        setError(bootstrapError.message);
+        setStatus("地图初始化失败。");
+      },
+      onMapReady: () => {
+        setStatus((current) =>
+          current === "正在加载地图和场景配置..."
+            ? "地图已加载，正在获取场景配置..."
+            : current
+        );
+      },
+      onReferencePointAdd: (point) => {
+        setReferencePoints((current) => [...current, point]);
+        setError("");
+        setStatus("已添加参考点，可继续选点或直接运行查询。");
+      },
+      referencePoints,
+      scenarioPoints: spartinaPoints,
+      selectedScenarioId,
+      similarityMode
+    });
 
   useEffect(() => {
     try {
@@ -237,9 +144,155 @@ export default function App() {
     }
   }, [params]);
 
-  const similarityMode = isSimilarityScenario(selectedScenarioId);
-  const latestReferencePoint =
-    referencePoints.length > 0 ? referencePoints[referencePoints.length - 1] : null;
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        SCENARIO_VIEW_STORAGE_KEY,
+        JSON.stringify(scenarioViews)
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [scenarioViews]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function bootstrapSpartinaPoints() {
+      try {
+        const points = await loadSpartinaPoints();
+        if (!cancelled) {
+          setSpartinaPoints(points);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError((current) => current || loadError.message);
+        }
+      }
+    }
+
+    bootstrapSpartinaPoints();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadScenarioDescriptors() {
+      try {
+        const scenarioResponse = await fetchScenarios();
+        if (cancelled) {
+          return;
+        }
+
+        setScenarios(scenarioResponse);
+        if (
+          !scenarioResponse.some(
+            (scenario) => scenario.scenario_id === selectedScenarioId
+          )
+        ) {
+          setSelectedScenarioId(scenarioResponse[0]?.scenario_id || "embedding_intro");
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError.message);
+          setStatus("场景配置加载失败。");
+        }
+      }
+    }
+
+    loadScenarioDescriptors();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (mapReady && scenarios.length > 0) {
+      setStatus(getScenarioStatusText(selectedScenarioId));
+    }
+  }, [mapReady, scenarios, selectedScenarioId]);
+
+  useEffect(() => {
+    if (!mapReady || !mapSnapshot || !shouldRememberScenarioView(selectedScenarioId)) {
+      return;
+    }
+
+    setScenarioViews((current) => {
+      if (isSameSnapshot(current[selectedScenarioId], mapSnapshot)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [selectedScenarioId]: mapSnapshot
+      };
+    });
+  }, [mapReady, mapSnapshot, selectedScenarioId]);
+
+  useEffect(() => {
+    if (!mapReady || !selectedScenario) {
+      return;
+    }
+
+    if (restoredScenarioIdRef.current === selectedScenarioId) {
+      return;
+    }
+
+    const rememberedView = shouldRememberScenarioView(selectedScenarioId)
+      ? scenarioViews[selectedScenarioId]
+      : null;
+
+    if (rememberedView && applyMapSnapshot(rememberedView)) {
+      restoredScenarioIdRef.current = selectedScenarioId;
+      return;
+    }
+
+    if (selectedScenario.default_view?.bounds) {
+      fitToBounds(selectedScenario.default_view.bounds, 60);
+    }
+    restoredScenarioIdRef.current = selectedScenarioId;
+  }, [
+    applyMapSnapshot,
+    fitToBounds,
+    mapReady,
+    scenarioViews,
+    selectedScenario,
+    selectedScenarioId
+  ]);
+
+  useEffect(() => {
+    setLayers([]);
+    setSummaries({});
+    setArtifacts({});
+    setError("");
+    setReferencePoints([]);
+    setUploadedTifMeta(null);
+    uploadedTifFileRef.current = null;
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+
+    if (mapReady) {
+      setStatus(getScenarioStatusText(selectedScenarioId));
+    }
+  }, [mapReady, selectedScenarioId]);
+
+  useEffect(() => {
+    if (selectedScenarioId !== "image_retrieval" || !uploadedTifFileRef.current) {
+      return;
+    }
+
+    parseUploadedTif(
+      uploadedTifFileRef.current,
+      params.imageSampleCount,
+      params.imageMaxSpacingMeters
+    );
+  }, [params.imageMaxSpacingMeters, params.imageSampleCount, selectedScenarioId]);
 
   async function parseUploadedTif(file, sampleCount, maxSpacingMeters) {
     setIsParsingTif(true);
@@ -273,332 +326,7 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-    selectedScenarioIdRef.current = selectedScenarioId;
-  }, [selectedScenarioId]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function bootstrap() {
-      try {
-        const [scenarioResponse, maps] = await Promise.all([
-          fetchScenarios(),
-          loadGoogleMaps(MAPS_API_KEY)
-        ]);
-        const mapsLib = await maps.importLibrary("maps");
-
-        if (cancelled || !mapHostRef.current) {
-          return;
-        }
-
-        mapsRef.current = {
-          maps,
-          Map: mapsLib.Map,
-          Marker: google.maps.Marker,
-          InfoWindow: google.maps.InfoWindow,
-          Size: google.maps.Size
-        };
-
-        const map = new mapsRef.current.Map(mapHostRef.current, {
-          center: { lat: 29.8683, lng: 121.544 },
-          zoom: 17,
-          mapTypeId: "satellite",
-          streetViewControl: false,
-          fullscreenControl: true,
-          mapTypeControl: false
-        });
-
-        mapRef.current = map;
-        infoWindowRef.current = new mapsRef.current.InfoWindow();
-
-        const updateSnapshot = () => {
-          const snapshot = extractMapSnapshot(map);
-          if (snapshot) {
-            setMapSnapshot(snapshot);
-          }
-        };
-
-        listenersRef.current = [
-          map.addListener("idle", updateSnapshot),
-          map.addListener("click", (event) => {
-            if (selectedScenarioIdRef.current !== "click_query") {
-              return;
-            }
-
-            const latLng = event.latLng;
-            if (!latLng) {
-              return;
-            }
-
-            setReferencePoints((current) => [
-              ...current,
-              {
-                lat: latLng.lat(),
-                lng: latLng.lng()
-              }
-            ]);
-            setError("");
-            setStatus("已添加参考点，可继续选点或直接运行查询。");
-          })
-        ];
-
-        setScenarios(scenarioResponse);
-        if (
-          !scenarioResponse.some(
-            (scenario) => scenario.scenario_id === selectedScenarioIdRef.current
-          )
-        ) {
-          setSelectedScenarioId(scenarioResponse[0]?.scenario_id || "embedding_intro");
-        }
-        setMapReady(true);
-        updateSnapshot();
-        setStatus("地图已就绪，可直接运行当前场景。");
-      } catch (bootstrapError) {
-        if (!cancelled) {
-          setError(bootstrapError.message);
-          setStatus("初始化失败。");
-        }
-      }
-    }
-
-    bootstrap();
-
-    return () => {
-      cancelled = true;
-      listenersRef.current.forEach((listener) => listener?.remove?.());
-      listenersRef.current = [];
-      resultMarkersRef.current.forEach((marker) => marker.setMap(null));
-      resultMarkersRef.current = [];
-      referenceMarkersRef.current.forEach((marker) => marker.setMap(null));
-      referenceMarkersRef.current = [];
-      mapRef.current = null;
-      mapsRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    const mapClasses = mapsRef.current;
-    if (!map || !mapClasses) {
-      return;
-    }
-
-    referenceMarkersRef.current.forEach((marker) => marker.setMap(null));
-    referenceMarkersRef.current = [];
-
-    if (referencePoints.length === 0 || !similarityMode) {
-      return;
-    }
-
-    referenceMarkersRef.current = referencePoints.map((point, index) => {
-      const isMultiClick = selectedScenarioId === "click_query";
-      return new mapClasses.Marker({
-        map,
-        position: point,
-        title: "Reference Point",
-        label: {
-          text: isMultiClick ? String(index + 1) : "R",
-          color: "#ffffff",
-          fontSize: "12px",
-          fontWeight: "700"
-        },
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          fillColor: "#dc2626",
-          fillOpacity: 1,
-          strokeColor: "#ffffff",
-          strokeWeight: 2,
-          scale: 10
-        }
-      });
-    });
-  }, [referencePoints, selectedScenarioId, similarityMode]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    const mapClasses = mapsRef.current;
-    if (!map || !mapClasses) {
-      return;
-    }
-
-    const overlays = map.overlayMapTypes;
-    while (overlays.getLength() > 0) {
-      overlays.removeAt(0);
-    }
-
-    layers
-      .filter(
-        (layer) =>
-          layer.visible &&
-          layer.layer_type === "raster_tile" &&
-          typeof layer.tile_url === "string" &&
-          layer.tile_url.length > 0
-      )
-      .forEach((layer) => {
-        const mapType = {
-          name: layer.name,
-          tileSize: new mapClasses.Size(256, 256),
-          getTile(coord, zoom, ownerDocument) {
-            const image = ownerDocument.createElement("img");
-            image.src = layer.tile_url
-              .replace("{x}", String(coord.x))
-              .replace("{y}", String(coord.y))
-              .replace("{z}", String(zoom));
-            image.alt = layer.name;
-            image.draggable = false;
-            image.style.width = "256px";
-            image.style.height = "256px";
-            image.style.display = "block";
-            image.style.opacity = String(layer.opacity ?? 1);
-            image.style.pointerEvents = "none";
-            return image;
-          },
-          releaseTile(tile) {
-            if (tile?.remove) {
-              tile.remove();
-            }
-          }
-        };
-        overlays.insertAt(overlays.getLength(), mapType);
-      });
-  }, [layers]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    const mapClasses = mapsRef.current;
-    if (!map || !mapClasses) {
-      return;
-    }
-
-    resultMarkersRef.current.forEach((marker) => marker.setMap(null));
-    resultMarkersRef.current = [];
-
-    const infoWindow = infoWindowRef.current;
-    infoWindow?.close();
-
-    layers
-      .filter(
-        (layer) =>
-          layer.visible &&
-          layer.layer_type === "point_collection" &&
-          layer.geojson?.type === "FeatureCollection"
-      )
-      .forEach((layer) => {
-        const features = Array.isArray(layer.geojson.features)
-          ? layer.geojson.features
-          : [];
-
-        features.forEach((feature) => {
-          if (feature?.geometry?.type !== "Point") {
-            return;
-          }
-
-          const [lng, lat] = feature.geometry.coordinates || [];
-          if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
-            return;
-          }
-
-          const rank = feature.properties?.rank;
-          const score = feature.properties?.score;
-          const marker = new mapClasses.Marker({
-            map,
-            position: { lat, lng },
-            title: layer.name,
-            label: rank
-              ? {
-                  text: String(rank),
-                  color: "#ffffff",
-                  fontSize: "12px",
-                  fontWeight: "700"
-                }
-              : undefined,
-            icon: {
-              path: google.maps.SymbolPath.CIRCLE,
-              fillColor: "#2563eb",
-              fillOpacity: 1,
-              strokeColor: "#ffffff",
-              strokeWeight: 2,
-              scale: 11
-            }
-          });
-
-          marker.addListener("click", () => {
-            infoWindow?.setContent(
-              `<div class="mapInfoWindow"><strong>${layer.name}</strong><br/>Rank: ${rank ?? "-"}<br/>Score: ${score ?? "-"}</div>`
-            );
-            infoWindow?.open({
-              map,
-              anchor: marker
-            });
-          });
-
-          resultMarkersRef.current.push(marker);
-        });
-      });
-  }, [layers]);
-
-  useEffect(() => {
-    if (!pendingAutoFitRef.current || !similarityMode) {
-      return;
-    }
-
-    const map = mapRef.current;
-    const mapsApi = mapsRef.current?.maps;
-    if (!map || !mapsApi) {
-      return;
-    }
-
-    const resultPoints = layers.flatMap(extractPointFeatures);
-    const allPoints = [...referencePoints, ...resultPoints];
-
-    if (allPoints.length === 0) {
-      pendingAutoFitRef.current = false;
-      return;
-    }
-
-    if (allPoints.length === 1) {
-      map.panTo(allPoints[0]);
-      map.setZoom(17);
-      pendingAutoFitRef.current = false;
-      return;
-    }
-
-    const bounds = new mapsApi.LatLngBounds();
-    allPoints.forEach((point) => bounds.extend(point));
-    map.fitBounds(bounds, 80);
-    pendingAutoFitRef.current = false;
-  }, [layers, referencePoints, similarityMode]);
-
-  useEffect(() => {
-    pendingAutoFitRef.current = false;
-    setLayers([]);
-    setSummaries({});
-    setArtifacts({});
-    setError("");
-    setReferencePoints([]);
-    setUploadedTifMeta(null);
-    uploadedTifFileRef.current = null;
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-    // setStatus(getScenarioHint(selectedScenarioId));
-  }, [selectedScenarioId]);
-
-  useEffect(() => {
-    if (selectedScenarioId !== "image_retrieval" || !uploadedTifFileRef.current) {
-      return;
-    }
-
-    parseUploadedTif(
-      uploadedTifFileRef.current,
-      params.imageSampleCount,
-      params.imageMaxSpacingMeters
-    );
-  }, [params.imageSampleCount, params.imageMaxSpacingMeters, selectedScenarioId]);
-
   function clearScene() {
-    pendingAutoFitRef.current = false;
     setLayers([]);
     setSummaries({});
     setArtifacts({});
@@ -634,7 +362,8 @@ export default function App() {
                 "scale",
                 "seed",
                 "searchSizeKm",
-                "topK"
+                "topK",
+                "minResultSpacingMeters"
               ].includes(name)
             ? Number(value)
             : ["rgbMin", "rgbMax", "candidateThreshold"].includes(name)
@@ -660,11 +389,28 @@ export default function App() {
     );
   }
 
-  async function runCurrentScenario() {
-    const selectedScenario = scenarios.find(
-      (scenario) => scenario.scenario_id === selectedScenarioId
-    );
+  function handleScenarioChange(nextScenarioId) {
+    if (
+      mapSnapshot &&
+      shouldRememberScenarioView(selectedScenarioId) &&
+      nextScenarioId !== selectedScenarioId
+    ) {
+      setScenarioViews((current) => {
+        if (isSameSnapshot(current[selectedScenarioId], mapSnapshot)) {
+          return current;
+        }
 
+        return {
+          ...current,
+          [selectedScenarioId]: mapSnapshot
+        };
+      });
+    }
+
+    setSelectedScenarioId(nextScenarioId);
+  }
+
+  async function runCurrentScenario() {
     if (!selectedScenario) {
       setError("场景配置尚未加载完成。");
       return;
@@ -705,6 +451,13 @@ export default function App() {
           seed: params.seed,
           include_vector_probe: params.includeVectorProbe
         };
+      } else if (selectedScenarioId === SPARTINA_SCENARIO_ID) {
+        payload = {
+          rgb_bands: [params.bandR, params.bandG, params.bandB],
+          rgb_min: params.rgbMin,
+          rgb_max: params.rgbMax,
+          scale: params.scale
+        };
       } else {
         if (referencePoints.length === 0) {
           throw new Error("请先设置参考点。");
@@ -715,27 +468,27 @@ export default function App() {
         }
 
         payload = {
-          reference_points: referencePoints.map((point) => [
-            point.lng,
-            point.lat
-          ]),
+          reference_points: referencePoints.map((point) => [point.lng, point.lat]),
           search_center: [mapSnapshot.center.lng, mapSnapshot.center.lat],
           search_size_km: params.searchSizeKm,
           top_k: params.topK,
           year: params.year,
           scale: params.scale,
-          candidate_threshold: params.candidateThreshold
+          candidate_threshold: params.candidateThreshold,
+          min_result_spacing_m: params.minResultSpacingMeters
         };
       }
 
       const response = await runScenario(selectedScenarioId, payload);
-      pendingAutoFitRef.current = isSimilarityScenario(selectedScenarioId);
+      if (similarityMode) {
+        requestAutoFit();
+      }
+
       setLayers(
         Array.isArray(response.layers)
           ? response.layers.map((layer) => ({
               ...layer,
-              visible: layer.layer_id !== "embedding-rgb",
-              opacity: typeof layer.opacity === "number" ? layer.opacity : 1
+              ...getLayerDefaults(selectedScenarioId, layer)
             }))
           : []
       );
@@ -766,9 +519,6 @@ export default function App() {
     );
   }
 
-  const selectedScenario = scenarios.find(
-    (scenario) => scenario.scenario_id === selectedScenarioId
-  );
   const runDisabled =
     !mapReady ||
     isRunning ||
@@ -777,420 +527,45 @@ export default function App() {
 
   return (
     <div className={`appShell${isRightPanelCollapsed ? " panelCollapsed" : ""}`}>
-      <aside className="leftPanel">
-        <p className="eyebrow">自然资源部</p>
-        <h1>影像嵌入分析平台</h1>
-        {/* <p className="intro">{getScenarioHint(selectedScenarioId)}</p> */}
-
-        <label className="field">
-          <span></span>
-          <select
-            className="select"
-            value={selectedScenarioId}
-            onChange={(event) => setSelectedScenarioId(event.target.value)}
-          >
-            {scenarios.map((scenario) => (
-              <option key={scenario.scenario_id} value={scenario.scenario_id}>
-                {scenario.name}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <button
-          className="runBtn"
-          disabled={runDisabled}
-          onClick={runCurrentScenario}
-          type="button"
-        >
-          {isRunning ? "运行中..." : "运行当前场景"}
-        </button>
-
-        <div className="controlRow">
-          <button className="ghostBtn" onClick={clearScene} type="button">
-            清空结果
-          </button>
-          {selectedScenarioId === "click_query" ? (
-            <button
-              className="ghostBtn"
-              onClick={clearClickReferencePoints}
-              type="button"
-            >
-              清空选点
-            </button>
-          ) : null}
-        </div>
-
-        {selectedScenarioId === "image_retrieval" ? (
-          <div className="scenarioBox">
-            <label className="field">
-              <span>GeoTIFF 文件</span>
-              <input
-                ref={fileInputRef}
-                accept=".tif,.tiff"
-                type="file"
-                onChange={handleTifUpload}
-              />
-            </label>
-            <div className="metaBlock">
-              <div>
-                <span className="metaLabel">文件</span>
-                <strong title={uploadedTifMeta?.fileName}>{uploadedTifMeta?.fileName || "-"}</strong>
-              </div>
-              <div>
-                <span className="metaLabel">源坐标系</span>
-                <strong title={uploadedTifMeta?.sourceCrs}>{uploadedTifMeta?.sourceCrs || "-"}</strong>
-              </div>
-              <div>
-                <span className="metaLabel">取点数量</span>
-                <strong>{uploadedTifMeta?.samplePointCount || 0}</strong>
-              </div>
-              <div>
-                <span className="metaLabel">最大相邻间距</span>
-                <strong>
-                  {uploadedTifMeta?.maxSpacingMeters != null
-                    ? `${uploadedTifMeta.maxSpacingMeters} m`
-                    : "-"}
-                </strong>
-              </div>
-              <div>
-                <span className="metaLabel">首个采样点</span>
-                <strong>{formatCoordinate(uploadedTifMeta?.firstPoint)}</strong>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {selectedScenarioId === "click_query" ? (
-          <div className="scenarioBox">
-            <div className="metaBlock">
-              <div>
-                <span className="metaLabel">已选点数</span>
-                <strong>{referencePoints.length}</strong>
-              </div>
-              <div>
-                <span className="metaLabel">最新参考点</span>
-                <strong>{formatCoordinate(latestReferencePoint)}</strong>
-              </div>
-              <div>
-                <span className="metaLabel">搜索中心</span>
-                <strong>{formatCoordinate(mapSnapshot?.center)}</strong>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        <details className="paramsPanel">
-          <summary className="paramsSummary">参数设置</summary>
-          <div className="fieldGrid">
-            <label className="field">
-              <span>年份</span>
-              <input
-                name="year"
-                type="number"
-                min="2017"
-                value={params.year}
-                onChange={handleParamChange}
-              />
-            </label>
-
-            {similarityMode ? (
-              <>
-                {selectedScenarioId === "image_retrieval" ? (
-                  <>
-                    <label className="field">
-                      <span>取点数量 <span className="paramValueBadge">{params.imageSampleCount}</span></span>
-                      <input
-                        name="imageSampleCount"
-                        type="range"
-                        min="1"
-                        max="100"
-                        step="1"
-                        value={params.imageSampleCount}
-                        onChange={handleParamChange}
-                      />
-                    </label>
-
-                    <label className="field">
-                      <span>最大相邻间距 m <span className="paramValueBadge">{params.imageMaxSpacingMeters}</span></span>
-                      <input
-                        name="imageMaxSpacingMeters"
-                        type="range"
-                        min="1"
-                        max="200"
-                        step="1"
-                        value={params.imageMaxSpacingMeters}
-                        onChange={handleParamChange}
-                      />
-                    </label>
-                  </>
-                ) : null}
-
-                <label className="field">
-                  <span>搜索边长 km <span className="paramValueBadge">{params.searchSizeKm}</span></span>
-                  <input
-                    name="searchSizeKm"
-                    type="range"
-                    min="1"
-                    max="50"
-                    step="1"
-                    value={params.searchSizeKm}
-                    onChange={handleParamChange}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>结果数量 <span className="paramValueBadge">{params.topK}</span></span>
-                  <input
-                    name="topK"
-                    type="range"
-                    min="1"
-                    max="100"
-                    step="1"
-                    value={params.topK}
-                    onChange={handleParamChange}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>Scale <span className="paramValueBadge">{params.scale}</span></span>
-                  <input
-                    name="scale"
-                    type="range"
-                    min="1"
-                    max="100"
-                    step="1"
-                    value={params.scale}
-                    onChange={handleParamChange}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>候选阈值 <span className="paramValueBadge">{params.candidateThreshold}</span></span>
-                  <input
-                    name="candidateThreshold"
-                    type="range"
-                    step="0.01"
-                    min="0.5"
-                    max="1"
-                    value={params.candidateThreshold}
-                    onChange={handleParamChange}
-                  />
-                </label>
-              </>
-            ) : (
-              <>
-                <label className="field">
-                  <span>RGB Band R</span>
-                  <select
-                    className="select"
-                    name="bandR"
-                    value={params.bandR}
-                    onChange={handleParamChange}
-                  >
-                    {BAND_OPTIONS.map((band) => (
-                      <option key={band} value={band}>
-                        {band}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="field">
-                  <span>RGB Band G</span>
-                  <select
-                    className="select"
-                    name="bandG"
-                    value={params.bandG}
-                    onChange={handleParamChange}
-                  >
-                    {BAND_OPTIONS.map((band) => (
-                      <option key={band} value={band}>
-                        {band}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="field">
-                  <span>RGB Band B</span>
-                  <select
-                    className="select"
-                    name="bandB"
-                    value={params.bandB}
-                    onChange={handleParamChange}
-                  >
-                    {BAND_OPTIONS.map((band) => (
-                      <option key={band} value={band}>
-                        {band}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="field">
-                  <span>RGB Min <span className="paramValueBadge">{params.rgbMin}</span></span>
-                  <input
-                    name="rgbMin"
-                    type="range"
-                    min="-1"
-                    max="1"
-                    step="0.05"
-                    value={params.rgbMin}
-                    onChange={handleParamChange}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>RGB Max <span className="paramValueBadge">{params.rgbMax}</span></span>
-                  <input
-                    name="rgbMax"
-                    type="range"
-                    min="-1"
-                    max="1"
-                    step="0.05"
-                    value={params.rgbMax}
-                    onChange={handleParamChange}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>聚类数 <span className="paramValueBadge">{params.clusterCount}</span></span>
-                  <input
-                    name="clusterCount"
-                    type="range"
-                    min="2"
-                    max="20"
-                    step="1"
-                    value={params.clusterCount}
-                    onChange={handleParamChange}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>采样数 <span className="paramValueBadge">{params.sampleCount}</span></span>
-                  <input
-                    name="sampleCount"
-                    type="range"
-                    min="10"
-                    max="1000"
-                    step="10"
-                    value={params.sampleCount}
-                    onChange={handleParamChange}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>Scale <span className="paramValueBadge">{params.scale}</span></span>
-                  <input
-                    name="scale"
-                    type="range"
-                    min="1"
-                    max="100"
-                    step="1"
-                    value={params.scale}
-                    onChange={handleParamChange}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>Seed</span>
-                  <input
-                    name="seed"
-                    type="number"
-                    value={params.seed}
-                    onChange={handleParamChange}
-                  />
-                </label>
-
-                <label className="checkboxRow">
-                  <input
-                    checked={params.includeVectorProbe}
-                    name="includeVectorProbe"
-                    onChange={handleParamChange}
-                    type="checkbox"
-                  />
-                  <span>返回 ROI 质心 embedding 向量</span>
-                </label>
-              </>
-            )}
-          </div>
-        </details>
-
-        <p className="statusLine">{status}</p>
-        {error ? <p className="errorText">{error}</p> : null}
-
-        <div className="scenarioBox">
-          <strong>{selectedScenario?.name || "Loading..."}</strong>
-          <p>{selectedScenario?.description || "正在加载场景说明..."}</p>
-          <span className={`statusPill ${selectedScenario?.status || "planned"}`}>
-            {selectedScenario?.status || "planned"}
-          </span>
-        </div>
-      </aside>
+      <LeftPanel
+        error={error}
+        fileInputRef={fileInputRef}
+        isParsingTif={isParsingTif}
+        isRunning={isRunning}
+        latestReferencePoint={latestReferencePoint}
+        mapSnapshot={mapSnapshot}
+        onClearClickReferencePoints={clearClickReferencePoints}
+        onClearScene={clearScene}
+        onParamChange={handleParamChange}
+        onRunScenario={runCurrentScenario}
+        onScenarioChange={handleScenarioChange}
+        onTifUpload={handleTifUpload}
+        params={params}
+        referencePoints={referencePoints}
+        runDisabled={runDisabled}
+        scenarios={scenarios}
+        selectedScenario={selectedScenario}
+        selectedScenarioId={selectedScenarioId}
+        similarityMode={similarityMode}
+        status={status}
+        uploadedTifMeta={uploadedTifMeta}
+      />
 
       <main className="mapPane">
         <div className="mapViewport" ref={mapHostRef} />
       </main>
 
-      <aside className={`rightPanel${isRightPanelCollapsed ? " collapsed" : ""}`}>
-        <div className="rightPanelHeader">
-          <button
-            aria-label={isRightPanelCollapsed ? "展开右侧面板" : "折叠右侧面板"}
-            className="panelToggle"
-            onClick={() => setIsRightPanelCollapsed((current) => !current)}
-            title={isRightPanelCollapsed ? "展开右侧面板" : "折叠右侧面板"}
-            type="button"
-          >
-            {isRightPanelCollapsed ? "<" : ">"}
-          </button>
-        </div>
-
-        {isRightPanelCollapsed ? null : (
-          <>
-            <section className="sideSection">
-              <h2>图层</h2>
-              {layers.length === 0 ? (
-                <p className="placeholder">运行场景后，这里会显示可切换图层。</p>
-              ) : (
-                layers.map((layer) => (
-                  <TileOverlay
-                    key={layer.layer_id}
-                    layer={layer}
-                    onToggle={updateLayerVisibility}
-                    onOpacityChange={updateLayerOpacity}
-                  />
-                ))
-              )}
-            </section>
-
-            <section className="sideSection">
-              <h2>摘要</h2>
-              {Object.keys(summaries).length === 0 ? (
-                <p className="placeholder">暂无摘要结果。</p>
-              ) : (
-                <div className="summaryList">
-                  {Object.entries(summaries).map(([key, value]) => (
-                    <div className="summaryRow" key={key}>
-                      <span>{key}</span>
-                      <strong>{formatValue(value)}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            <section className="sideSection">
-              <h2>Artifacts</h2>
-              {Object.keys(artifacts).length === 0 ? (
-                <p className="placeholder">当前没有额外 artifacts。</p>
-              ) : (
-                <pre className="artifactBox">{JSON.stringify(artifacts, null, 2)}</pre>
-              )}
-            </section>
-          </>
-        )}
-      </aside>
+      <RightPanel
+        artifacts={artifacts}
+        isCollapsed={isRightPanelCollapsed}
+        layers={layers}
+        onOpacityChange={updateLayerOpacity}
+        onToggleCollapse={() =>
+          setIsRightPanelCollapsed((current) => !current)
+        }
+        onToggleLayer={updateLayerVisibility}
+        summaries={summaries}
+      />
     </div>
   );
 }
