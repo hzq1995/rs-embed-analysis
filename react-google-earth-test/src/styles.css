@@ -187,9 +187,110 @@ summary:focus-visible {
 }
 
 .mapViewport {
+  position: relative;
+  z-index: 0;
   width: 100%;
   height: 100vh;
   background: #07101d;
+}
+
+.mapViewport.leaflet-container {
+  font: inherit;
+}
+
+.mapViewport .leaflet-control-container {
+  position: relative;
+  z-index: 2;
+}
+
+.mapViewport .leaflet-top,
+.mapViewport .leaflet-bottom {
+  z-index: 2;
+}
+
+.mapViewport .leaflet-top.leaflet-right {
+  top: 18px;
+  right: 18px;
+}
+
+.mapViewport .leaflet-control-zoom {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(16, 28, 52, 0.95) 0%, rgba(9, 18, 34, 0.92) 100%);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(18px) saturate(135%);
+}
+
+.mapViewport .leaflet-control-zoom a {
+  width: 38px;
+  height: 38px;
+  line-height: 36px;
+  color: var(--text-main);
+  border-bottom-color: var(--line-soft);
+  background: transparent;
+}
+
+.mapViewport .leaflet-control-zoom a:hover,
+.mapViewport .leaflet-control-zoom a:focus {
+  color: var(--text-main);
+  background: rgba(66, 201, 255, 0.12);
+}
+
+.mapViewport .leaflet-popup-content-wrapper,
+.mapViewport .leaflet-popup-tip {
+  color: var(--text-main);
+  border: 1px solid rgba(122, 166, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(16, 28, 52, 0.98) 0%, rgba(9, 18, 34, 0.96) 100%);
+  box-shadow: var(--shadow-panel);
+}
+
+.mapViewport .leaflet-popup-content {
+  margin: 12px 14px;
+}
+
+.mapViewport .leaflet-popup-close-button {
+  color: var(--text-soft);
+}
+
+.mapViewport .leaflet-popup-close-button:hover {
+  color: var(--text-main);
+}
+
+.mapPointLabel {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+}
+
+.mapPointLabel span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 4px;
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+
+.mapPointLabelReference span {
+  background: #dc2626;
+}
+
+.mapPointLabelResult span {
+  background: #2563eb;
 }
 
 .spartinaOverlay {
@@ -198,7 +299,7 @@ summary:focus-visible {
   right: 346px;
   bottom: 18px;
   left: 424px;
-  z-index: 2;
+  z-index: 4;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -313,6 +414,7 @@ summary:focus-visible {
 
 .spartinaOverlay.rightPanelCollapsed {
   right: 82px;
+  z-index: 4;
 }
 
 .rightPanelHeader {
@@ -811,7 +913,7 @@ h2 {
 
 .mapInfoWindow {
   min-width: 140px;
-  color: #122035;
+  color: var(--text-main);
   line-height: 1.55;
 }
 
@@ -874,6 +976,11 @@ h2 {
 
   .mapViewport {
     height: 100%;
+  }
+
+  .mapViewport .leaflet-top.leaflet-right {
+    top: 14px;
+    right: 14px;
   }
 
   .spartinaOverlay {
@@ -939,6 +1046,11 @@ h2 {
     gap: 12px;
     padding: 12px;
     inset: 8px;
+  }
+
+  .mapViewport .leaflet-top.leaflet-right {
+    top: 8px;
+    right: 8px;
   }
 
   .spartinaOverlayHeader {

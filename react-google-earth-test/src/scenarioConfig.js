@@ -1,5 +1,4 @@
 export const SPARTINA_SCENARIO_ID = "spartina_change_detection";
-export const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 export const ROI_INSET_RATIO = 0;
 export const BAND_OPTIONS = Array.from({ length: 64 }, (_, index) =>
   `A${String(index).padStart(2, "0")}`

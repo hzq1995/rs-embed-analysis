@@ -4,7 +4,7 @@ import LeftPanel from "./components/LeftPanel";
 import RightPanel from "./components/RightPanel";
 import SpartinaTifOverlay from "./components/SpartinaTifOverlay";
 import { parseGeoTiffSamplePoints } from "./geotiffUtils";
-import { useGoogleMapScene } from "./hooks/useGoogleMapScene";
+import { useMapScene } from "./hooks/useMapScene";
 import { buildGeoJsonPolygon, buildViewportInsetPolygon } from "./mapUtils";
 import {
   defaultParams,
@@ -126,29 +126,28 @@ export default function App() {
     mapReady,
     mapSnapshot,
     requestAutoFit
-  } =
-    useGoogleMapScene({
-      layers,
-      onError: (bootstrapError) => {
-        setError(bootstrapError.message);
-        setStatus("地图初始化失败。");
-      },
-      onMapReady: () => {
-        setStatus((current) =>
-          current === "正在加载地图和场景配置..."
-            ? "地图已加载，正在获取场景配置..."
-            : current
-        );
-      },
-      onReferencePointAdd: (point) => {
-        setReferencePoints((current) => [...current, point]);
-        setError("");
-        setStatus("已添加参考点，可继续选点或直接运行查询。");
-      },
-      referencePoints,
-      selectedScenarioId,
-      similarityMode
-    });
+  } = useMapScene({
+    layers,
+    onError: (bootstrapError) => {
+      setError(bootstrapError.message);
+      setStatus("地图初始化失败。");
+    },
+    onMapReady: () => {
+      setStatus((current) =>
+        current === "正在加载地图和场景配置..."
+          ? "地图已加载，正在获取场景配置..."
+          : current
+      );
+    },
+    onReferencePointAdd: (point) => {
+      setReferencePoints((current) => [...current, point]);
+      setError("");
+      setStatus("已添加参考点，可继续选点或直接运行查询。");
+    },
+    referencePoints,
+    selectedScenarioId,
+    similarityMode
+  });
 
   useEffect(() => {
     try {

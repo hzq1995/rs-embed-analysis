@@ -41,22 +41,42 @@ export function extractMapSnapshot(map) {
   const zoom = map.getZoom();
   const northEast = bounds?.getNorthEast();
   const southWest = bounds?.getSouthWest();
+  const centerLat =
+    typeof center?.lat === "function" ? center.lat() : Number(center?.lat);
+  const centerLng =
+    typeof center?.lng === "function" ? center.lng() : Number(center?.lng);
+  const north =
+    typeof northEast?.lat === "function" ? northEast.lat() : Number(northEast?.lat);
+  const east =
+    typeof northEast?.lng === "function" ? northEast.lng() : Number(northEast?.lng);
+  const south =
+    typeof southWest?.lat === "function" ? southWest.lat() : Number(southWest?.lat);
+  const west =
+    typeof southWest?.lng === "function" ? southWest.lng() : Number(southWest?.lng);
 
-  if (!center || !northEast || !southWest || !Number.isFinite(zoom)) {
+  if (
+    !Number.isFinite(centerLat) ||
+    !Number.isFinite(centerLng) ||
+    !Number.isFinite(north) ||
+    !Number.isFinite(east) ||
+    !Number.isFinite(south) ||
+    !Number.isFinite(west) ||
+    !Number.isFinite(zoom)
+  ) {
     return null;
   }
 
   return {
     center: {
-      lat: center.lat(),
-      lng: center.lng()
+      lat: centerLat,
+      lng: centerLng
     },
     zoom,
     bounds: {
-      north: northEast.lat(),
-      east: northEast.lng(),
-      south: southWest.lat(),
-      west: southWest.lng()
+      north,
+      east,
+      south,
+      west
     }
   };
 }
