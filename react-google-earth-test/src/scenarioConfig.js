@@ -21,9 +21,9 @@ export const defaultParams = {
   scale: 10,
   seed: 100,
   includeVectorProbe: false,
-  searchSizeKm: 3,
-  topK: 10,
-  candidateThreshold: 0.9,
+  searchSizeKm: 4,
+  topK: 15,
+  candidateThreshold: 0.91,
   imageSampleCount: 9,
   imageMaxSpacingMeters: 10,
   minResultSpacingMeters: 0

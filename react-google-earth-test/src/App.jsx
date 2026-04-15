@@ -14,6 +14,7 @@ import {
 
 const PARAMS_STORAGE_KEY = "rs_embed_params";
 const SCENARIO_VIEW_STORAGE_KEY = "rs_embed_scenario_views";
+const CLICK_QUERY_CATEGORIES_STORAGE_KEY = "rs_embed_click_query_categories";
 const HIDDEN_SCENARIO_IDS = new Set(["image_retrieval"]);
 const SPARTINA_EXTRACTION_DELAY_MS = 1000;
 
@@ -49,6 +50,55 @@ function loadStoredScenarioViews() {
 
     const stored = JSON.parse(raw);
     return stored && typeof stored === "object" ? stored : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizePoint(point) {
+  if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lng)) {
+    return null;
+  }
+
+  return {
+    lat: Number(point.lat),
+    lng: Number(point.lng)
+  };
+}
+
+function loadStoredClickPointCategories() {
+  try {
+    const raw = localStorage.getItem(CLICK_QUERY_CATEGORIES_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const stored = JSON.parse(raw);
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) {
+      return {};
+    }
+
+    return Object.entries(stored).reduce((result, [key, value]) => {
+      const name =
+        typeof value?.name === "string" && value.name.trim().length > 0
+          ? value.name.trim()
+          : typeof key === "string"
+            ? key.trim()
+            : "";
+      const points = Array.isArray(value?.points)
+        ? value.points.map(normalizePoint).filter(Boolean)
+        : [];
+
+      if (!name || points.length === 0) {
+        return result;
+      }
+
+      result[name] = {
+        name,
+        points
+      };
+      return result;
+    }, {});
   } catch {
     return {};
   }
@@ -95,10 +145,17 @@ export default function App() {
   const [selectedScenarioId, setSelectedScenarioId] = useState("embedding_intro");
   const [params, setParams] = useState(loadStoredParams);
   const [scenarioViews, setScenarioViews] = useState(loadStoredScenarioViews);
+  const [savedClickPointCategories, setSavedClickPointCategories] = useState(
+    loadStoredClickPointCategories
+  );
   const [layers, setLayers] = useState([]);
   const [summaries, setSummaries] = useState({});
   const [artifacts, setArtifacts] = useState({});
   const [referencePoints, setReferencePoints] = useState([]);
+  const [activeClickPointCategoryName, setActiveClickPointCategoryName] = useState("");
+  const [clickPointCategoryInput, setClickPointCategoryInput] = useState("");
+  const [isActiveClickPointCategorySynced, setIsActiveClickPointCategorySynced] =
+    useState(false);
   const [uploadedTifMeta, setUploadedTifMeta] = useState(null);
   const [isParsingTif, setIsParsingTif] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -141,8 +198,13 @@ export default function App() {
     },
     onReferencePointAdd: (point) => {
       setReferencePoints((current) => [...current, point]);
+      setActiveClickPointCategoryName("");
+      setIsActiveClickPointCategorySynced(false);
       setError("");
       setStatus("已添加参考点，可继续选点或直接运行查询。");
+    },
+    onReferencePointDelete: (pointIndex) => {
+      removeReferencePoint(pointIndex);
     },
     referencePoints,
     selectedScenarioId,
@@ -167,6 +229,17 @@ export default function App() {
       // ignore storage errors
     }
   }, [scenarioViews]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        CLICK_QUERY_CATEGORIES_STORAGE_KEY,
+        JSON.stringify(savedClickPointCategories)
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [savedClickPointCategories]);
 
   useEffect(() => {
     let cancelled = false;
@@ -266,6 +339,9 @@ export default function App() {
     setArtifacts({});
     setError("");
     setReferencePoints([]);
+    setActiveClickPointCategoryName("");
+    setClickPointCategoryInput("");
+    setIsActiveClickPointCategorySynced(false);
     setUploadedTifMeta(null);
     uploadedTifFileRef.current = null;
     if (fileInputRef.current) {
@@ -303,6 +379,9 @@ export default function App() {
       const samplePoints = tifData.samplePoints || [];
 
       setReferencePoints(samplePoints);
+      setActiveClickPointCategoryName("");
+      setClickPointCategoryInput("");
+      setIsActiveClickPointCategorySynced(false);
       setUploadedTifMeta({
         fileName: file.name,
         sourceCrs: tifData.sourceCrs,
@@ -314,6 +393,9 @@ export default function App() {
     } catch (parseError) {
       setUploadedTifMeta(null);
       setReferencePoints([]);
+      setActiveClickPointCategoryName("");
+      setClickPointCategoryInput("");
+      setIsActiveClickPointCategorySynced(false);
       setError(parseError.message);
       setStatus("GeoTIFF 解析失败。");
     } finally {
@@ -326,6 +408,9 @@ export default function App() {
     setSummaries({});
     setArtifacts({});
     setReferencePoints([]);
+    setActiveClickPointCategoryName("");
+    setClickPointCategoryInput("");
+    setIsActiveClickPointCategorySynced(false);
     setUploadedTifMeta(null);
     uploadedTifFileRef.current = null;
     setError("");
@@ -337,8 +422,155 @@ export default function App() {
 
   function clearClickReferencePoints() {
     setReferencePoints([]);
+    setActiveClickPointCategoryName("");
+    setIsActiveClickPointCategorySynced(false);
     setError("");
     setStatus("已清空点击参考点。");
+  }
+
+  function handleClickPointCategoryInputChange(event) {
+    setClickPointCategoryInput(event.target.value);
+  }
+
+  function saveClickPointCategory() {
+    const trimmedName = clickPointCategoryInput.trim();
+    if (!trimmedName) {
+      setError("请输入类别名称。");
+      return;
+    }
+
+    if (referencePoints.length === 0) {
+      setError("当前没有可保存的选点。");
+      return;
+    }
+
+    const nextCategory = {
+      name: trimmedName,
+      points: referencePoints.map((point) => ({
+        lat: point.lat,
+        lng: point.lng
+      }))
+    };
+
+    setSavedClickPointCategories((current) => ({
+      ...current,
+      [trimmedName]: nextCategory
+    }));
+    setActiveClickPointCategoryName(trimmedName);
+    setClickPointCategoryInput(trimmedName);
+    setIsActiveClickPointCategorySynced(true);
+    setError("");
+    setStatus(`已保存类别“${trimmedName}”。`);
+  }
+
+  function deleteActiveClickPointCategory() {
+    if (!activeClickPointCategoryName) {
+      setError("请先选择要删除的类别。");
+      return;
+    }
+
+    const categoryName = activeClickPointCategoryName;
+    setSavedClickPointCategories((current) => {
+      if (!current[categoryName]) {
+        return current;
+      }
+
+      const nextCategories = { ...current };
+      delete nextCategories[categoryName];
+      return nextCategories;
+    });
+    setReferencePoints([]);
+    setActiveClickPointCategoryName("");
+    setClickPointCategoryInput("");
+    setIsActiveClickPointCategorySynced(false);
+    setError("");
+    setStatus(`已删除类别“${categoryName}”。`);
+  }
+
+  function restoreClickPointCategory(categoryName) {
+    if (!categoryName) {
+      setActiveClickPointCategoryName("");
+      setClickPointCategoryInput("");
+      setIsActiveClickPointCategorySynced(false);
+      setReferencePoints([]);
+      setError("");
+      setStatus("已清空当前选点，可重新点击地图或选择已保存类别。");
+      return;
+    }
+
+    const category = savedClickPointCategories[categoryName];
+    if (!category || !Array.isArray(category.points) || category.points.length === 0) {
+      setError(`未找到类别“${categoryName}”。`);
+      return;
+    }
+
+    setReferencePoints(
+      category.points.map((point) => ({
+        lat: point.lat,
+        lng: point.lng
+      }))
+    );
+    setActiveClickPointCategoryName(category.name);
+    setClickPointCategoryInput(category.name);
+    setIsActiveClickPointCategorySynced(true);
+    setError("");
+    setStatus(`已恢复类别“${category.name}”的选点。`);
+  }
+
+  function handleClickPointCategorySelect(event) {
+    restoreClickPointCategory(event.target.value);
+  }
+
+  function removeReferencePoint(pointIndex) {
+    let removed = false;
+
+    setReferencePoints((current) => {
+      if (pointIndex < 0 || pointIndex >= current.length) {
+        return current;
+      }
+
+      removed = true;
+      const nextPoints = current.filter((_, index) => index !== pointIndex);
+
+      if (activeClickPointCategoryName && isActiveClickPointCategorySynced) {
+        if (nextPoints.length === 0) {
+          setSavedClickPointCategories((categories) => {
+            const nextCategories = { ...categories };
+            delete nextCategories[activeClickPointCategoryName];
+            return nextCategories;
+          });
+          setActiveClickPointCategoryName("");
+          setClickPointCategoryInput("");
+          setIsActiveClickPointCategorySynced(false);
+        } else {
+          const nextCategory = {
+            name: activeClickPointCategoryName,
+            points: nextPoints.map((point) => ({
+              lat: point.lat,
+              lng: point.lng
+            }))
+          };
+
+          setSavedClickPointCategories((categories) => ({
+            ...categories,
+            [activeClickPointCategoryName]: nextCategory
+          }));
+        }
+      }
+
+      return nextPoints;
+    });
+
+    if (!removed) {
+      return;
+    }
+
+    setError("");
+    setStatus(
+      activeClickPointCategoryName && isActiveClickPointCategorySynced
+        ? "已删除参考点，并同步更新已保存类别。"
+        : "已删除参考点。"
+    );
   }
 
   function handleParamChange(event) {
@@ -373,6 +605,9 @@ export default function App() {
       uploadedTifFileRef.current = null;
       setUploadedTifMeta(null);
       setReferencePoints([]);
+      setActiveClickPointCategoryName("");
+      setClickPointCategoryInput("");
+      setIsActiveClickPointCategorySynced(false);
       return;
     }
 
@@ -533,25 +768,43 @@ export default function App() {
     isRunning ||
     isParsingTif ||
     (similarityMode && referencePoints.length === 0);
+  const clickPointCategoryNames = Object.keys(savedClickPointCategories).sort((a, b) =>
+    a.localeCompare(b, "zh-CN")
+  );
+  const saveClickPointCategoryDisabled =
+    selectedScenarioId !== "click_query" ||
+    referencePoints.length === 0 ||
+    clickPointCategoryInput.trim().length === 0;
+  const deleteClickPointCategoryDisabled =
+    selectedScenarioId !== "click_query" || !activeClickPointCategoryName;
 
   return (
     <div className={`appShell${isRightPanelCollapsed ? " panelCollapsed" : ""}`}>
       <LeftPanel
+        activeClickPointCategoryName={activeClickPointCategoryName}
+        clickPointCategoryInput={clickPointCategoryInput}
         error={error}
         fileInputRef={fileInputRef}
         isParsingTif={isParsingTif}
         isRunning={isRunning}
         latestReferencePoint={latestReferencePoint}
         mapSnapshot={mapSnapshot}
+        onClickPointCategoryInputChange={handleClickPointCategoryInputChange}
+        onClickPointCategorySelect={handleClickPointCategorySelect}
         onClearClickReferencePoints={clearClickReferencePoints}
         onClearScene={clearScene}
+        onDeleteClickPointCategory={deleteActiveClickPointCategory}
         onParamChange={handleParamChange}
         onRunScenario={runCurrentScenario}
         onScenarioChange={handleScenarioChange}
+        onSaveClickPointCategory={saveClickPointCategory}
         onTifUpload={handleTifUpload}
         params={params}
         referencePoints={referencePoints}
+        deleteClickPointCategoryDisabled={deleteClickPointCategoryDisabled}
         runDisabled={runDisabled}
+        saveClickPointCategoryDisabled={saveClickPointCategoryDisabled}
+        savedClickPointCategoryNames={clickPointCategoryNames}
         scenarios={visibleScenarios}
         selectedScenario={selectedScenario}
         selectedScenarioId={selectedScenarioId}

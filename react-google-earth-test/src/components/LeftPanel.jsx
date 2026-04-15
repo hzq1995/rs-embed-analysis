@@ -6,21 +6,30 @@ import {
 } from "../scenarioConfig";
 
 export default function LeftPanel({
+  activeClickPointCategoryName,
+  clickPointCategoryInput,
+  deleteClickPointCategoryDisabled,
   error,
   fileInputRef,
   isParsingTif,
   isRunning,
   latestReferencePoint,
   mapSnapshot,
+  onClickPointCategoryInputChange,
+  onClickPointCategorySelect,
   onClearClickReferencePoints,
   onClearScene,
+  onDeleteClickPointCategory,
   onParamChange,
   onRunScenario,
   onScenarioChange,
+  onSaveClickPointCategory,
   onTifUpload,
   params,
   referencePoints,
   runDisabled,
+  saveClickPointCategoryDisabled,
+  savedClickPointCategoryNames,
   scenarios,
   selectedScenario,
   selectedScenarioId,
@@ -150,6 +159,60 @@ export default function LeftPanel({
               <strong>{formatCoordinate(mapSnapshot?.center)}</strong>
             </div>
           </div>
+
+          <div className="fieldGrid clickQueryCategoryPanel">
+            <label className="field">
+              <span>类别名称</span>
+              <input
+                placeholder="输入类别名称后保存"
+                type="text"
+                value={clickPointCategoryInput}
+                onChange={onClickPointCategoryInputChange}
+              />
+            </label>
+
+            <button
+              className="successBtn"
+              disabled={saveClickPointCategoryDisabled}
+              onClick={onSaveClickPointCategory}
+              type="button"
+            >
+              保存到类别
+            </button>
+
+            <button
+              className="ghostBtn"
+              disabled={deleteClickPointCategoryDisabled}
+              onClick={onDeleteClickPointCategory}
+              type="button"
+            >
+              删除类别
+            </button>
+
+            <label className="field">
+              <span>已保存类别</span>
+              <select
+                className="select"
+                value={activeClickPointCategoryName}
+                onChange={onClickPointCategorySelect}
+              >
+                <option value="">选择已保存类别</option>
+                {savedClickPointCategoryNames.map((categoryName) => (
+                  <option key={categoryName} value={categoryName}>
+                    {categoryName}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <p className="clickQueryCategoryHint">
+            {activeClickPointCategoryName
+              ? `当前激活类别：${activeClickPointCategoryName}`
+              : savedClickPointCategoryNames.length > 0
+                ? "可从已保存类别快速恢复选点。"
+                : "当前还没有已保存的类别。"}
+          </p>
         </div>
       ) : null}
 
@@ -258,8 +321,8 @@ export default function LeftPanel({
                   name="candidateThreshold"
                   type="range"
                   step="0.01"
-                  min="0.5"
-                  max="1"
+                  min="0.8"
+                  max="1.0"
                   value={params.candidateThreshold}
                   onChange={onParamChange}
                 />

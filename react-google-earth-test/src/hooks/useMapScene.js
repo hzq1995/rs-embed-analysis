@@ -43,6 +43,10 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function formatPopupCoordinate(value) {
+  return Number.isFinite(value) ? value.toFixed(6) : "-";
+}
+
 function createLabelMarker(latlng, text, variant) {
   return L.marker(latlng, {
     interactive: false,
@@ -57,20 +61,93 @@ function createLabelMarker(latlng, text, variant) {
   });
 }
 
-function createReferenceMarker(point, index, selectedScenarioId) {
+function createStyledPointMarker(latlng, text, tone) {
+  return L.marker(latlng, {
+    pane: "markerPane",
+    icon: L.divIcon({
+      className: `mapStyledPointMarker mapStyledPointMarker${tone}`,
+      html: `
+        <div class="mapStyledPointMarkerShell">
+          <span class="mapStyledPointMarkerDisc">
+            ${
+              text !== undefined && text !== null && String(text).length > 0
+                ? `<span class="mapStyledPointMarkerText">${escapeHtml(text)}</span>`
+                : ""
+            }
+          </span>
+          ${
+            tone === "Reference"
+              ? '<span class="mapStyledPointMarkerGlow"></span>'
+              : ""
+          }
+        </div>
+      `,
+      iconSize: [25, 25],
+      iconAnchor: [12.5, 12.5],
+      popupAnchor: [0, -12]
+    })
+  });
+}
+
+function createReferencePopup(point, index, onDelete) {
+  const container = document.createElement("div");
+  container.className = "mapInfoWindow";
+
+  const title = document.createElement("strong");
+  title.textContent = `参考点 ${index + 1}`;
+
+  const coordinates = document.createElement("div");
+  coordinates.className = "mapInfoRow";
+  coordinates.textContent = `${formatPopupCoordinate(point.lat)}, ${formatPopupCoordinate(point.lng)}`;
+
+  const actions = document.createElement("div");
+  actions.className = "mapPopupActions";
+
+  const button = document.createElement("button");
+  button.className = "mapPopupDeleteBtn";
+  button.type = "button";
+  button.textContent = "删除";
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onDelete?.(index);
+  });
+
+  actions.appendChild(button);
+  container.appendChild(title);
+  container.appendChild(coordinates);
+  container.appendChild(actions);
+  return container;
+}
+
+function createReferenceMarker(point, index, selectedScenarioId, onDelete) {
   const latlng = [point.lat, point.lng];
   const isMultiClick = selectedScenarioId === "click_query";
   const labelText = isMultiClick ? String(index + 1) : "R";
-  const circle = L.circleMarker(latlng, {
-    radius: 10,
-    color: "#ffffff",
-    weight: 2,
-    fillColor: "#dc2626",
-    fillOpacity: 1,
-    pane: "markerPane"
-  });
-  const label = createLabelMarker(latlng, labelText, "Reference");
-  return L.layerGroup([circle, label]);
+  const markerGroup = L.featureGroup([]);
+
+  if (isMultiClick) {
+    const marker = createStyledPointMarker(latlng, labelText, "Reference");
+    markerGroup.addLayer(marker);
+  } else {
+    const circle = L.circleMarker(latlng, {
+      radius: 10,
+      color: "#ffffff",
+      weight: 2,
+      fillColor: "#dc2626",
+      fillOpacity: 1,
+      pane: "markerPane"
+    });
+    const label = createLabelMarker(latlng, labelText, "Reference");
+    markerGroup.addLayer(circle);
+    markerGroup.addLayer(label);
+  }
+
+  if (typeof onDelete === "function") {
+    markerGroup.bindPopup(createReferencePopup(point, index, onDelete));
+  }
+
+  return markerGroup;
 }
 
 function createResultMarker(layerName, feature) {
@@ -82,28 +159,21 @@ function createResultMarker(layerName, feature) {
   const rank = feature.properties?.rank;
   const score = feature.properties?.score;
   const latlng = [lat, lng];
-  const circle = L.circleMarker(latlng, {
-    radius: 11,
-    color: "#ffffff",
-    weight: 2,
-    fillColor: "#2563eb",
-    fillOpacity: 1,
-    pane: "markerPane"
-  });
+  const marker = createStyledPointMarker(
+    latlng,
+    rank !== undefined && rank !== null ? String(rank) : "",
+    "Result"
+  );
 
-  if (rank !== undefined && rank !== null) {
-    const label = createLabelMarker(latlng, rank, "Result");
-    const markerGroup = L.featureGroup([circle, label]);
-    markerGroup.bindPopup(
-      `<div class="mapInfoWindow"><strong>${escapeHtml(layerName)}</strong><br/>Rank: ${escapeHtml(rank)}<br/>Score: ${escapeHtml(score ?? "-")}</div>`
-    );
-    return markerGroup;
-  }
-
-  circle.bindPopup(
+  marker.bindPopup(
     `<div class="mapInfoWindow"><strong>${escapeHtml(layerName)}</strong><br/>Rank: -<br/>Score: ${escapeHtml(score ?? "-")}</div>`
   );
-  return circle;
+  if (rank !== undefined && rank !== null) {
+    marker.bindPopup(
+      `<div class="mapInfoWindow"><strong>${escapeHtml(layerName)}</strong><br/>Rank: ${escapeHtml(rank)}<br/>Score: ${escapeHtml(score ?? "-")}</div>`
+    );
+  }
+  return marker;
 }
 
 export function useMapScene({
@@ -111,6 +181,7 @@ export function useMapScene({
   onError,
   onMapReady,
   onReferencePointAdd,
+  onReferencePointDelete,
   referencePoints,
   selectedScenarioId,
   similarityMode
@@ -127,6 +198,7 @@ export function useMapScene({
   const onErrorRef = useRef(onError);
   const onMapReadyRef = useRef(onMapReady);
   const onReferencePointAddRef = useRef(onReferencePointAdd);
+  const onReferencePointDeleteRef = useRef(onReferencePointDelete);
   const [mapReady, setMapReady] = useState(false);
   const [mapSnapshot, setMapSnapshot] = useState(null);
 
@@ -145,6 +217,10 @@ export function useMapScene({
   useEffect(() => {
     onReferencePointAddRef.current = onReferencePointAdd;
   }, [onReferencePointAdd]);
+
+  useEffect(() => {
+    onReferencePointDeleteRef.current = onReferencePointDelete;
+  }, [onReferencePointDelete]);
 
   useEffect(() => {
     if (!mapHostRef.current) {
@@ -233,7 +309,14 @@ export function useMapScene({
     }
 
     referenceMarkersRef.current = referencePoints.map((point, index) => {
-      const marker = createReferenceMarker(point, index, selectedScenarioId);
+      const marker = createReferenceMarker(
+        point,
+        index,
+        selectedScenarioId,
+        selectedScenarioId === "click_query"
+          ? (deleteIndex) => onReferencePointDeleteRef.current?.(deleteIndex)
+          : null
+      );
       marker.addTo(map);
       return marker;
     });
