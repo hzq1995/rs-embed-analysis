@@ -55,8 +55,8 @@ function createLabelMarker(latlng, text, variant) {
     icon: L.divIcon({
       className: `mapPointLabel mapPointLabel${variant}`,
       html: `<span>${escapeHtml(text)}</span>`,
-      iconSize: [24, 24],
-      iconAnchor: [12, 12]
+      iconSize: [21.6, 21.6],
+      iconAnchor: [10.8, 10.8]
     })
   });
 }
@@ -82,9 +82,9 @@ function createStyledPointMarker(latlng, text, tone) {
           }
         </div>
       `,
-      iconSize: [25, 25],
-      iconAnchor: [12.5, 12.5],
-      popupAnchor: [0, -12]
+      iconSize: [22.5, 22.5],
+      iconAnchor: [11.25, 11.25],
+      popupAnchor: [0, -10.8]
     })
   });
 }
@@ -131,7 +131,7 @@ function createReferenceMarker(point, index, selectedScenarioId, onDelete) {
     markerGroup.addLayer(marker);
   } else {
     const circle = L.circleMarker(latlng, {
-      radius: 10,
+      radius: 9,
       color: "#ffffff",
       weight: 2,
       fillColor: "#dc2626",
